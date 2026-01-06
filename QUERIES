@@ -1,1 +1,373 @@
-SQL_PRACtICE
+SQL_PRACTICE — Business SQL “Cookbook” (templates you can adapt)
+
+Conventions used below
+- Replace tokens like <orders_table>, <order_date_col>, <customer_id_col> with your real names.
+- Most queries are ANSI-ish SQL; date functions differ by database:
+  - Postgres: date_trunc('month', ts), ts::date, interval '1 day'
+  - BigQuery: DATE_TRUNC(date, MONTH), DATE(ts), DATE_ADD(date, INTERVAL 1 DAY)
+  - Snowflake: DATE_TRUNC('MONTH', ts), TO_DATE(ts), DATEADD(day, 1, date)
+
+============================================================
+0) BASE TABLE SHAPE (typical analytics model)
+============================================================
+-- orders: one row per order
+-- <orders_table>(
+--   <order_id_col>, <customer_id_col>, <order_ts_col>,
+--   <status_col>, <currency_col>, <subtotal_col>, <discount_col>, <tax_col>, <shipping_col>, <total_col>
+-- )
+-- order_items: one row per line item
+-- <order_items_table>(<order_id_col>, <product_id_col>, <qty_col>, <unit_price_col>, <line_total_col>)
+-- customers: one row per customer
+-- <customers_table>(<customer_id_col>, <created_ts_col>, <country_col>, <segment_col>, ...)
+-- products: one row per product
+-- <products_table>(<product_id_col>, <category_col>, <brand_col>, <cost_col>, ...)
+
+============================================================
+1) SALES KPI DASHBOARD (daily / weekly / monthly)
+============================================================
+-- Daily revenue, orders, AOV, new customers, repeat rate
+WITH base_orders AS (
+  SELECT
+    CAST(<order_ts_col> AS DATE) AS order_date,
+    <order_id_col> AS order_id,
+    <customer_id_col> AS customer_id,
+    <total_col> AS order_total
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')  -- adapt
+),
+first_order AS (
+  SELECT customer_id, MIN(order_date) AS first_order_date
+  FROM base_orders
+  GROUP BY 1
+),
+by_day AS (
+  SELECT
+    o.order_date,
+    COUNT(*) AS orders,
+    COUNT(DISTINCT o.customer_id) AS customers,
+    SUM(o.order_total) AS revenue,
+    AVG(o.order_total) AS aov,
+    SUM(CASE WHEN f.first_order_date = o.order_date THEN 1 ELSE 0 END) AS new_customer_orders,
+    SUM(CASE WHEN f.first_order_date < o.order_date THEN 1 ELSE 0 END) AS repeat_customer_orders
+  FROM base_orders o
+  JOIN first_order f ON f.customer_id = o.customer_id
+  GROUP BY 1
+)
+SELECT
+  order_date,
+  revenue,
+  orders,
+  aov,
+  customers,
+  new_customer_orders,
+  repeat_customer_orders,
+  CASE WHEN orders = 0 THEN 0 ELSE repeat_customer_orders * 1.0 / orders END AS repeat_order_rate
+FROM by_day
+ORDER BY order_date;
+
+============================================================
+2) TOP-N: PRODUCTS, CATEGORIES, CUSTOMERS
+============================================================
+-- Top products by revenue in last 30 days
+WITH recent_orders AS (
+  SELECT <order_id_col> AS order_id
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')
+    AND <order_ts_col> >= CURRENT_DATE - INTERVAL '30 day'
+),
+sales AS (
+  SELECT
+    oi.<product_id_col> AS product_id,
+    SUM(oi.<line_total_col>) AS revenue,
+    SUM(oi.<qty_col>) AS units,
+    COUNT(DISTINCT oi.<order_id_col>) AS orders
+  FROM <order_items_table> oi
+  JOIN recent_orders ro ON ro.order_id = oi.<order_id_col>
+  GROUP BY 1
+)
+SELECT
+  s.product_id,
+  p.<category_col> AS category,
+  s.revenue,
+  s.units,
+  s.orders
+FROM sales s
+LEFT JOIN <products_table> p ON p.<product_id_col> = s.product_id
+ORDER BY s.revenue DESC
+FETCH FIRST 50 ROWS ONLY;
+
+-- Top customers by lifetime value (LTV)
+SELECT
+  o.<customer_id_col> AS customer_id,
+  SUM(o.<total_col>) AS ltv_revenue,
+  COUNT(*) AS orders,
+  MIN(CAST(o.<order_ts_col> AS DATE)) AS first_order_date,
+  MAX(CAST(o.<order_ts_col> AS DATE)) AS last_order_date
+FROM <orders_table> o
+WHERE o.<status_col> IN ('paid', 'completed')
+GROUP BY 1
+ORDER BY ltv_revenue DESC
+FETCH FIRST 100 ROWS ONLY;
+
+============================================================
+3) COHORTS & RETENTION (classic “first purchase month”)
+============================================================
+-- Retention: customers active in month N after first purchase month
+WITH paid_orders AS (
+  SELECT
+    <customer_id_col> AS customer_id,
+    CAST(<order_ts_col> AS DATE) AS order_date
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')
+),
+firsts AS (
+  SELECT customer_id, MIN(order_date) AS first_order_date
+  FROM paid_orders
+  GROUP BY 1
+),
+activity AS (
+  SELECT
+    p.customer_id,
+    DATE_TRUNC('month', f.first_order_date) AS cohort_month,
+    DATE_TRUNC('month', p.order_date) AS active_month
+  FROM paid_orders p
+  JOIN firsts f ON f.customer_id = p.customer_id
+  GROUP BY 1,2,3
+),
+cohort_sizes AS (
+  SELECT cohort_month, COUNT(DISTINCT customer_id) AS cohort_customers
+  FROM activity
+  GROUP BY 1
+),
+retention AS (
+  SELECT
+    a.cohort_month,
+    a.active_month,
+    COUNT(DISTINCT a.customer_id) AS active_customers
+  FROM activity a
+  GROUP BY 1,2
+)
+SELECT
+  r.cohort_month,
+  r.active_month,
+  r.active_customers,
+  cs.cohort_customers,
+  (r.active_customers * 1.0 / cs.cohort_customers) AS retention_rate
+FROM retention r
+JOIN cohort_sizes cs USING (cohort_month)
+ORDER BY r.cohort_month, r.active_month;
+
+============================================================
+4) CHURN (subscription or repeat purchase)
+============================================================
+-- A) Subscription churn (needs a subscriptions table)
+-- <subscriptions_table>(<customer_id_col>, <start_date_col>, <cancel_date_col>, <status_col>, <plan_col>)
+SELECT
+  DATE_TRUNC('month', <cancel_date_col>) AS churn_month,
+  COUNT(*) AS churned_subscriptions
+FROM <subscriptions_table>
+WHERE <cancel_date_col> IS NOT NULL
+GROUP BY 1
+ORDER BY 1;
+
+-- B) Purchase churn proxy: customers with no purchase in last X days
+WITH paid_orders AS (
+  SELECT
+    <customer_id_col> AS customer_id,
+    MAX(CAST(<order_ts_col> AS DATE)) AS last_order_date
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')
+  GROUP BY 1
+)
+SELECT
+  COUNT(*) AS churned_customers
+FROM paid_orders
+WHERE last_order_date < CURRENT_DATE - INTERVAL '90 day'; -- choose X days
+
+============================================================
+5) FUNNELS (web/app events → conversion)
+============================================================
+-- Requires events table:
+-- <events_table>(<user_id_col>, <event_ts_col>, <event_name_col>, <session_id_col>, <properties_json_col>...)
+-- Example: session-level funnel (visit → add_to_cart → checkout → purchase)
+WITH sessions AS (
+  SELECT
+    <session_id_col> AS session_id,
+    MIN(<event_ts_col>) AS session_start
+  FROM <events_table>
+  WHERE <event_ts_col> >= CURRENT_DATE - INTERVAL '30 day'
+  GROUP BY 1
+),
+flags AS (
+  SELECT
+    e.<session_id_col> AS session_id,
+    MAX(CASE WHEN e.<event_name_col> = 'visit' THEN 1 ELSE 0 END) AS did_visit,
+    MAX(CASE WHEN e.<event_name_col> = 'add_to_cart' THEN 1 ELSE 0 END) AS did_add_to_cart,
+    MAX(CASE WHEN e.<event_name_col> = 'checkout' THEN 1 ELSE 0 END) AS did_checkout,
+    MAX(CASE WHEN e.<event_name_col> = 'purchase' THEN 1 ELSE 0 END) AS did_purchase
+  FROM <events_table> e
+  JOIN sessions s ON s.session_id = e.<session_id_col>
+  GROUP BY 1
+)
+SELECT
+  COUNT(*) AS sessions,
+  SUM(did_visit) AS visits,
+  SUM(did_add_to_cart) AS add_to_cart,
+  SUM(did_checkout) AS checkout,
+  SUM(did_purchase) AS purchase,
+  SUM(did_purchase) * 1.0 / NULLIF(SUM(did_visit), 0) AS visit_to_purchase_rate
+FROM flags;
+
+============================================================
+6) RFM SEGMENTATION (Recency, Frequency, Monetary)
+============================================================
+-- RFM scores (1-5) by quintiles; adapt NTILE support per DB.
+WITH paid_orders AS (
+  SELECT
+    <customer_id_col> AS customer_id,
+    CAST(<order_ts_col> AS DATE) AS order_date,
+    <total_col> AS order_total
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')
+),
+agg AS (
+  SELECT
+    customer_id,
+    MAX(order_date) AS last_order_date,
+    COUNT(*) AS frequency,
+    SUM(order_total) AS monetary
+  FROM paid_orders
+  GROUP BY 1
+),
+scored AS (
+  SELECT
+    a.*,
+    (CURRENT_DATE - a.last_order_date) AS recency_days,
+    NTILE(5) OVER (ORDER BY (CURRENT_DATE - a.last_order_date) ASC) AS r_score, -- lower recency_days = better
+    NTILE(5) OVER (ORDER BY a.frequency DESC) AS f_score,
+    NTILE(5) OVER (ORDER BY a.monetary DESC) AS m_score
+  FROM agg a
+)
+SELECT
+  customer_id,
+  recency_days,
+  frequency,
+  monetary,
+  r_score, f_score, m_score,
+  (r_score * 100 + f_score * 10 + m_score) AS rfm_code
+FROM scored
+ORDER BY rfm_code DESC;
+
+============================================================
+7) PROFITABILITY (needs product cost)
+============================================================
+-- Gross margin by product/category in last 90 days
+WITH recent_paid_orders AS (
+  SELECT <order_id_col> AS order_id
+  FROM <orders_table>
+  WHERE <status_col> IN ('paid', 'completed')
+    AND <order_ts_col> >= CURRENT_DATE - INTERVAL '90 day'
+),
+lines AS (
+  SELECT
+    oi.<product_id_col> AS product_id,
+    SUM(oi.<qty_col>) AS units,
+    SUM(oi.<line_total_col>) AS revenue
+  FROM <order_items_table> oi
+  JOIN recent_paid_orders o ON o.order_id = oi.<order_id_col>
+  GROUP BY 1
+)
+SELECT
+  l.product_id,
+  p.<category_col> AS category,
+  l.units,
+  l.revenue,
+  (p.<cost_col> * l.units) AS cogs,
+  (l.revenue - (p.<cost_col> * l.units)) AS gross_profit,
+  (l.revenue - (p.<cost_col> * l.units)) * 1.0 / NULLIF(l.revenue, 0) AS gross_margin
+FROM lines l
+JOIN <products_table> p ON p.<product_id_col> = l.product_id
+ORDER BY gross_profit DESC;
+
+============================================================
+8) INVENTORY: STOCKOUT RISK & AGING
+============================================================
+-- Requires inventory snapshot:
+-- <inventory_table>(<product_id_col>, <snapshot_date_col>, <on_hand_col>, <on_order_col>, <reorder_point_col>)
+SELECT
+  i.<snapshot_date_col> AS snapshot_date,
+  i.<product_id_col> AS product_id,
+  i.<on_hand_col> AS on_hand,
+  i.<on_order_col> AS on_order,
+  i.<reorder_point_col> AS reorder_point,
+  CASE WHEN i.<on_hand_col> <= i.<reorder_point_col> THEN 1 ELSE 0 END AS below_reorder_point
+FROM <inventory_table> i
+WHERE i.<snapshot_date_col> = (SELECT MAX(<snapshot_date_col>) FROM <inventory_table>)
+ORDER BY below_reorder_point DESC, on_hand ASC;
+
+============================================================
+9) DATA QUALITY CHECKS (high value in real businesses)
+============================================================
+-- Duplicate order IDs
+SELECT <order_id_col>, COUNT(*) AS cnt
+FROM <orders_table>
+GROUP BY 1
+HAVING COUNT(*) > 1
+ORDER BY cnt DESC;
+
+-- Negative totals / suspicious values
+SELECT *
+FROM <orders_table>
+WHERE <total_col> < 0
+   OR <subtotal_col> < 0
+   OR <tax_col> < 0
+   OR <shipping_col> < 0;
+
+-- Orphan line items (line without matching order)
+SELECT oi.*
+FROM <order_items_table> oi
+LEFT JOIN <orders_table> o ON o.<order_id_col> = oi.<order_id_col>
+WHERE o.<order_id_col> IS NULL;
+
+============================================================
+10) “MOST COMMON COMPLEX SQL TRICKS” CHEATSHEET
+============================================================
+-- A) Window functions: running totals
+SELECT
+  CAST(<order_ts_col> AS DATE) AS order_date,
+  SUM(<total_col>) AS daily_revenue,
+  SUM(SUM(<total_col>)) OVER (ORDER BY CAST(<order_ts_col> AS DATE)) AS running_revenue
+FROM <orders_table>
+WHERE <status_col> IN ('paid', 'completed')
+GROUP BY 1
+ORDER BY 1;
+
+-- B) Top-N per group (e.g., top 3 products per category)
+WITH prod_rev AS (
+  SELECT
+    p.<category_col> AS category,
+    oi.<product_id_col> AS product_id,
+    SUM(oi.<line_total_col>) AS revenue
+  FROM <order_items_table> oi
+  JOIN <orders_table> o ON o.<order_id_col> = oi.<order_id_col>
+  JOIN <products_table> p ON p.<product_id_col> = oi.<product_id_col>
+  WHERE o.<status_col> IN ('paid', 'completed')
+  GROUP BY 1,2
+),
+ranked AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY revenue DESC) AS rn
+  FROM prod_rev
+)
+SELECT category, product_id, revenue
+FROM ranked
+WHERE rn <= 3
+ORDER BY category, revenue DESC;
+
+-- C) “Gaps and islands” (find consecutive days with zero sales)
+-- Needs a calendar table or generated dates (DB-specific). Sketch:
+-- 1) calendar(date)
+-- 2) left join daily sales
+-- 3) mark zero days
+-- 4) group consecutive zeros using (date - row_number)
