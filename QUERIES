@@ -1,1 +1,95 @@
-SQL_PRACtICE
+-- SQL templates: "last 4 weeks" data
+-- Replace:
+--   your_table      -> your real table name
+--   date_column     -> your date/timestamp column (e.g., created_at)
+--   metric_column   -> optional numeric metric to sum/avg
+
+-- =========================
+-- Postgres
+-- =========================
+-- Row-level: last 4 weeks
+SELECT *
+FROM your_table
+WHERE date_column >= now() - interval '4 weeks';
+
+-- Weekly rollup: last 4 full weeks + current week-to-date (calendar weeks)
+SELECT
+  date_trunc('week', date_column)::date AS week_start,
+  count(*) AS row_count
+  -- , sum(metric_column) AS metric_sum
+FROM your_table
+WHERE date_column >= date_trunc('week', now()) - interval '3 weeks'
+GROUP BY 1
+ORDER BY 1;
+
+-- =========================
+-- MySQL 8+
+-- =========================
+-- Row-level: last 28 days (closest equivalent to 4 weeks)
+SELECT *
+FROM your_table
+WHERE date_column >= NOW() - INTERVAL 28 DAY;
+
+-- Weekly rollup (Monday week start; adjust mode if needed)
+SELECT
+  STR_TO_DATE(CONCAT(YEARWEEK(date_column, 1), ' Monday'), '%X%V %W') AS week_start,
+  COUNT(*) AS row_count
+  -- , SUM(metric_column) AS metric_sum
+FROM your_table
+WHERE date_column >= DATE_SUB(CURDATE(), INTERVAL 28 DAY)
+GROUP BY 1
+ORDER BY 1;
+
+-- =========================
+-- SQL Server
+-- =========================
+-- Row-level: last 4 weeks
+SELECT *
+FROM your_table
+WHERE date_column >= DATEADD(WEEK, -4, SYSUTCDATETIME());
+
+-- Weekly rollup (week starts depend on DATEFIRST)
+SELECT
+  DATEADD(DAY, -((DATEPART(WEEKDAY, date_column) + @@DATEFIRST - 2) % 7), CAST(date_column AS date)) AS week_start,
+  COUNT(*) AS row_count
+  -- , SUM(metric_column) AS metric_sum
+FROM your_table
+WHERE date_column >= DATEADD(WEEK, -4, SYSUTCDATETIME())
+GROUP BY DATEADD(DAY, -((DATEPART(WEEKDAY, date_column) + @@DATEFIRST - 2) % 7), CAST(date_column AS date))
+ORDER BY week_start;
+
+-- =========================
+-- BigQuery
+-- =========================
+-- Row-level: last 4 weeks
+SELECT *
+FROM `your_table`
+WHERE date_column >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 WEEK);
+
+-- Weekly rollup (ISO weeks start Monday)
+SELECT
+  DATE_TRUNC(DATE(date_column), WEEK(MONDAY)) AS week_start,
+  COUNT(*) AS row_count
+  -- , SUM(metric_column) AS metric_sum
+FROM `your_table`
+WHERE date_column >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 4 WEEK)
+GROUP BY week_start
+ORDER BY week_start;
+
+-- =========================
+-- Snowflake
+-- =========================
+-- Row-level: last 4 weeks
+SELECT *
+FROM your_table
+WHERE date_column >= DATEADD(WEEK, -4, CURRENT_TIMESTAMP());
+
+-- Weekly rollup
+SELECT
+  DATE_TRUNC('WEEK', date_column)::date AS week_start,
+  COUNT(*) AS row_count
+  -- , SUM(metric_column) AS metric_sum
+FROM your_table
+WHERE date_column >= DATEADD(WEEK, -4, CURRENT_TIMESTAMP())
+GROUP BY 1
+ORDER BY 1;
