@@ -1,5 +1,5 @@
 -- Hub-wise Churn and Reactivation Query
--- Output: hub_name, city, week, churn_count, reactivation_count
+-- Shows: hub_name, city, week, churn_count, reactivation_count
 
 WITH provider_weeks AS (
     SELECT DISTINCT 
