@@ -257,7 +257,8 @@ SELECT
     COALESCE(hc.city, hr.city) AS "city::multi-filter",
     COALESCE(hc.ldd_week, hr.reactivation_week) AS "week::multi-filter",
     COALESCE(hc.churn_count, 0) AS churn_count,
-    COALESCE(hr.reactivation_count, 0) AS reactivation_count
+    COALESCE(hr.reactivation_count, 0) AS reactivation_count,
+    (COALESCE(hc.churn_count, 0) + COALESCE(hr.reactivation_count, 0)) AS gross_churn
 FROM hub_churn hc
 FULL OUTER JOIN hub_reactivation hr 
     ON hc.hub_name = hr.hub_name 
