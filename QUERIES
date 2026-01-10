@@ -1,1 +1,72 @@
-SQL_PRACtICE
+SQL_PRACTICE
+
+================================================================================
+REACTIVATION CALCULATION ANALYSIS
+================================================================================
+
+## Understanding Reactivation Logic (from Query A)
+
+Reactivation is calculated based on the following conditions:
+
+1. **week_mark_status = 'Working'**
+   - Provider has >8 hours marked as "marked working" in the current week
+   - Hours counted between 8 AM and 7 PM (start_hour_local BETWEEN 8 AND 19)
+
+2. **lag_week_mark_status = 'Not Working'**
+   - Previous week the provider had ≤8 hours marked working
+
+3. **working_status = 1**
+   - Provider had at least one delivery in that week (service_delivered = 1)
+
+4. **pro_current_status_for_reactivation = 'Active'**
+   - Based on L7D (Last 7 Days) current status
+   - Provider must currently have >8 hours marked working in last 7 days
+
+5. **Churn Event Exists**
+   - There must be a churn event in the previous week
+   - Churn event = transition from 'Working' to 'Not Working'
+
+## Date Reference
+
+- Reactivation is tracked by **week_start** (week when reactivation occurred)
+- This corresponds to **ldd_week** (last delivery date week) in Query B
+- Week is calculated using DATE_TRUNC('week', date)
+
+================================================================================
+FILES CREATED
+================================================================================
+
+1. **query_b_hub_reactivation.sql** (Full version)
+   - Complete Query B with hub-wise reactivation
+   - All CTEs from Query A included for reactivation calculation
+
+2. **query_b_hub_reactivation_simple.sql** (Simplified version)
+   - Cleaner, more readable version
+   - Same logic, better organization
+
+3. **verify_reactivation_match.sql** (Validation query)
+   - Compares city-level reactivation vs sum of hub reactivations
+   - Run this to verify: SUM(hub reactivations) = city reactivation
+
+================================================================================
+VALIDATION EXAMPLE
+================================================================================
+
+For Bangalore, 22-Dec week:
+- Query A (city-level): reactivations = X
+- Query B (hub-level): SUM(all_bangalore_hubs reactivation) should = X
+
+The verification query will show:
+| City      | Week       | City Reactivation | Hub Sum | Match Status |
+|-----------|------------|-------------------|---------|--------------|
+| Bangalore | 2024-12-22 | 15                | 15      | ✓ MATCH      |
+
+================================================================================
+KEY CHANGES IN MODIFIED QUERY B
+================================================================================
+
+1. Added CTEs for weekly marking status calculation
+2. Added churn_events CTE to track Working→Not Working transitions
+3. Added reactivation_providers CTE with exact Query A logic
+4. Added hub_reactivation CTE to aggregate by hub
+5. Joined hub_reactivation to final output on hub_name, city, and week
