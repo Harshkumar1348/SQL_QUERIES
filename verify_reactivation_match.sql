@@ -254,8 +254,8 @@ hub_reactivation AS (
 -- ============== FINAL OUTPUT: Hub-wise Churn and Reactivation ==============
 SELECT 
     COALESCE(hc.hub_name, hr.hub_name) AS hub_name,
-    COALESCE(hc.city, hr.city) AS city,
-    COALESCE(hc.ldd_week, hr.reactivation_week) AS week,
+    COALESCE(hc.city, hr.city) AS "city::multi-filter",
+    COALESCE(hc.ldd_week, hr.reactivation_week) AS "week::multi-filter",
     COALESCE(hc.churn_count, 0) AS churn_count,
     COALESCE(hr.reactivation_count, 0) AS reactivation_count
 FROM hub_churn hc
@@ -264,4 +264,4 @@ FULL OUTER JOIN hub_reactivation hr
     AND hc.city = hr.city
     AND hc.ldd_week = hr.reactivation_week
 WHERE COALESCE(hc.ldd_week, hr.reactivation_week) >= '2024-12-01'
-ORDER BY city, hub_name, week DESC;
+ORDER BY "city::multi-filter", hub_name, "week::multi-filter" DESC;
