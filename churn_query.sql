@@ -829,7 +829,7 @@ week_num,
 age,
 churn_status,
 case when age<=30 then 'ELC' else 'LLC' end as life_cycle,
-overall_avg_rating, MAX(last_delivery_date) as ldd,f10_sum_weekly_rating,f10_sum_weekly_rated_jobs,
+overall_avg_rating, ldd,f10_sum_weekly_rating,f10_sum_weekly_rated_jobs,
 avg_weekly_rating,total_rating_sum,total_rated_jobs,
 gr as total_requests,
 sd as total_deliveries,
@@ -862,7 +862,7 @@ life_cycle,
 total_requests,
 total_deliveries,
 total_rated_jobs,total_rating_sum,
-overall_avg_rating, MAX(last_delivery_date) as ldd,
+overall_avg_rating, ldd,
 f10_sum_weekly_rating,f10_sum_weekly_rated_jobs,
 avg_weekly_rating,
 bad_rated_jobs,
@@ -905,7 +905,7 @@ case when nullif(sum(case when life_cycle='ELC' then total_graded_leaves end),0)
 nullif(sum(case when life_cycle='ELC' then total_graded_leaves end),0)/nullif(count( case when life_cycle='ELC' then provider_id end),0) end as leaves_per_pro,
 case when nullif(sum(case when life_cycle='ELC' then total_rating_sum end),0)/nullif(sum(case when life_cycle='ELC' then total_rated_jobs end),0)
 is null then 0 else
-nullif(sum(case when life_cycle='ELC' then total_rating_sum end),0)/nullif(sum(case when life_cycle='ELC' then total_rated_jobs end),0) end as hh_pros_avg_rating, MAX(last_delivery_date) as ldd,
+nullif(sum(case when life_cycle='ELC' then total_rating_sum end),0)/nullif(sum(case when life_cycle='ELC' then total_rated_jobs end),0) end as hh_pros_avg_rating, ldd,
 sum(total_deliveries)/hh_eligible AS Util,
  
 ROUND(
