@@ -905,7 +905,7 @@ nullif(sum(case when life_cycle='ELC' then total_graded_leaves end),0)/nullif(co
 case when nullif(sum(case when life_cycle='ELC' then total_rating_sum end),0)/nullif(sum(case when life_cycle='ELC' then total_rated_jobs end),0)
 is null then 0 else
 nullif(sum(case when life_cycle='ELC' then total_rating_sum end),0)/nullif(sum(case when life_cycle='ELC' then total_rated_jobs end),0) end as hh_pros_avg_rating,
-sum(total_deliveries)/hh_eligible AS Util,
+sum(case when life_cycle='ELC' then total_deliveries end)/nullif(count(distinct case when life_cycle='ELC' then provider_id end),0) AS Util,
  
 ROUND(
     100.0 * 
@@ -923,7 +923,7 @@ where trainer_name is not null
 group by all
 HAVING COUNT(DISTINCT CASE WHEN life_cycle='ELC' THEN provider_id END) > 0
 and (
-        SUM(total_deliveries)
+        SUM(CASE WHEN life_cycle='ELC' THEN total_deliveries END)
         / NULLIF(COUNT(DISTINCT CASE WHEN life_cycle='ELC' THEN provider_id END),0)
     ) < 30
 order by 1,2,3
