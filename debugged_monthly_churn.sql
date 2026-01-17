@@ -287,7 +287,11 @@ reactivation as (
       AND bf.month_start > DATE_TRUNC('month', bf.min_bdate_final)
       AND bf.working_status = 1
       AND bf.pro_current_status_for_reactivation = 'Active'
-      -- Removed restrictive clause: AND EXISTS (SELECT 1 FROM churn_events ...)
+      AND EXISTS (
+          SELECT 1 FROM churn_events ce
+          WHERE ce.provider_id = bf.provider_id
+            AND ce.churn_month < bf.month_start
+      )
     GROUP BY 1, 2
 ),
 
