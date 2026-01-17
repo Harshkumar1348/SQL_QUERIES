@@ -34,8 +34,8 @@ provider_current_status AS (
         pdf.provider_id,
         pdf.city AS reporting_city,
         CASE 
-            WHEN last_delivery_date IS NULL THEN TO_CHAR(DATE_TRUNC('week', DATE(approval_date)), 'YYYY-MM-DD') 
-            ELSE TO_CHAR(DATE_TRUNC('week', DATE(last_delivery_date)), 'YYYY-MM-DD') 
+            WHEN last_delivery_date IS NULL THEN DATE_TRUNC('week', DATE(approval_date))
+            ELSE DATE_TRUNC('week', DATE(last_delivery_date))
         END AS ldd_week,
         CASE 
             WHEN COALESCE(l7d.L7D_status, 'Unknown') = 'Not Working' THEN 'Churned'
