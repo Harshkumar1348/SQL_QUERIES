@@ -126,6 +126,7 @@ weekly_base_final AS (
         pwc.provider_id,
         pwc.week_start,
         m.min_bdate_final,
+        m.ldd,
         pwc.approval_date,
         CASE
             WHEN pw.week IS NOT NULL THEN 1
@@ -159,9 +160,13 @@ weekly_base_final AS (
 )
 
 SELECT
-    bf.reporting_city AS city,
+    bf.reporting_city AS "city::multi-filter",
     bf.provider_id,
-    TO_CHAR(bf.week_start, 'YYYY-MM-DD') AS reactivation_week
+    TO_CHAR(bf.week_start, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
+    CASE 
+        WHEN bf.ldd IS NULL THEN TO_CHAR(DATE_TRUNC('week', DATE(bf.approval_date)), 'YYYY-MM-DD')
+        ELSE TO_CHAR(DATE_TRUNC('week', DATE(bf.ldd)), 'YYYY-MM-DD')
+    END AS ldd_week
 FROM weekly_base_final bf
 WHERE bf.week_mark_status = 'Working'
   AND bf.lag_week_mark_status = 'Not Working'
@@ -172,4 +177,4 @@ WHERE bf.week_mark_status = 'Working'
       WHERE ce.provider_id = bf.provider_id
         AND ce.churn_week < bf.week_start
   )
-ORDER BY city, reactivation_week
+ORDER BY "city::multi-filter", "reactivation_week::multi-filter"
