@@ -83,21 +83,7 @@ min_bdate AS (
     FROM provider__daily__facts
 ),
 
--- NEW: Calculate the LAST delivery date *relative* to each week
--- This finds the max delivery date strictly BEFORE the current week_start
-provider_last_delivery_before_week AS (
-    SELECT 
-        pwc.provider_id,
-        pwc.week_start,
-        MAX(rdf.bdate_final) AS last_delivery_before_week
-    FROM provider_weeks_combined pwc
-    LEFT JOIN request__daily__facts rdf 
-        ON pwc.provider_id = rdf.provider_id
-        AND rdf.customer_category_key = 'insta_maids'
-        AND rdf.service_delivered = 1
-        AND DATE(rdf.bdate_final) < DATE(pwc.week_start) -- Look for deliveries strictly before the week starts
-    GROUP BY 1, 2
-),
+-- Removed provider_last_delivery_before_week CTE as it's no longer needed
 
 provider_weekly_markings AS (
     SELECT
@@ -142,8 +128,6 @@ weekly_base_final AS (
         pwc.provider_id,
         pwc.week_start,
         m.min_bdate_final,
-        -- Use the dynamic LDD calculated per week instead of the static LDD from provider__daily__facts
-        pld.last_delivery_before_week AS ldd_relative,
         pwc.approval_date,
         CASE
             WHEN pw.week IS NOT NULL THEN 1
@@ -168,33 +152,39 @@ weekly_base_final AS (
        AND pw.week = pwc.week_start
     LEFT JOIN min_bdate m 
         ON m.provider_id = pwc.provider_id
-    LEFT JOIN provider_last_delivery_before_week pld
-        ON pld.provider_id = pwc.provider_id
-        AND pld.week_start = pwc.week_start
     LEFT JOIN provider_current_status_net pcs 
         ON pcs.provider_id = pwc.provider_id
     LEFT JOIN provider_weekly_markings_with_lag pwm
         ON pwm.provider_id = pwc.provider_id 
        AND pwm.week_start = pwc.week_start
     WHERE pwc.approval_date IS NOT NULL
+),
+
+reactivation_candidates AS (
+    SELECT * 
+    FROM weekly_base_final
+    WHERE week_mark_status = 'Working'
+      AND lag_week_mark_status = 'Not Working'
+      AND working_status = 1
+      AND pro_current_status = 'Active'
 )
 
 SELECT
-    bf.reporting_city AS "city::multi-filter",
-    bf.provider_id,
-    TO_CHAR(bf.week_start, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
-    CASE 
-        WHEN bf.ldd_relative IS NULL THEN TO_CHAR(DATE_TRUNC('week', DATE(bf.approval_date)), 'YYYY-MM-DD')
-        ELSE TO_CHAR(DATE_TRUNC('week', DATE(bf.ldd_relative)), 'YYYY-MM-DD')
-    END AS ldd_week
-FROM weekly_base_final bf
-WHERE bf.week_mark_status = 'Working'
-  AND bf.lag_week_mark_status = 'Not Working'
-  AND bf.working_status = 1
-  AND bf.pro_current_status = 'Active'
-  AND EXISTS (
-      SELECT 1 FROM weekly_churn_events ce
-      WHERE ce.provider_id = bf.provider_id
-        AND ce.churn_week < bf.week_start
-  )
+    rc.reporting_city AS "city::multi-filter",
+    rc.provider_id,
+    TO_CHAR(rc.week_start, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
+    TO_CHAR(
+        (SELECT MAX(ce.churn_week) 
+         FROM weekly_churn_events ce 
+         WHERE ce.provider_id = rc.provider_id 
+           AND ce.churn_week < rc.week_start),
+        'YYYY-MM-DD'
+    ) AS churn_week
+FROM reactivation_candidates rc
+WHERE EXISTS (
+    SELECT 1 
+    FROM weekly_churn_events ce
+    WHERE ce.provider_id = rc.provider_id
+      AND ce.churn_week < rc.week_start
+)
 ORDER BY "city::multi-filter", "reactivation_week::multi-filter"
