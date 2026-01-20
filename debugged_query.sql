@@ -66,6 +66,7 @@ v1_pre_training AS (
     SELECT
         p.created_by,
         p.sdate,
+        b.city,
         COUNT(CASE WHEN p.sdate IS NOT NULL THEN 1 END) AS total_screening,
         ROUND(
             100.0 * COUNT(CASE WHEN b.screening_qualified IS NOT NULL THEN 1 END)
@@ -79,13 +80,14 @@ v1_pre_training AS (
         ) AS sp_tp_pct
     FROM v1_base b
     LEFT JOIN v1_poc p ON b.provider_id = p.provider_id
-    GROUP BY p.created_by, p.sdate
+    GROUP BY p.created_by, p.sdate, b.city
 ),
 
 v1_post_training AS (
     SELECT
         s.raw_trainer,
         DATE_TRUNC('week', s.updated_at_ist) AS tweek,
+        b.city,
         COUNT(DISTINCT s.provider_id) as Total_partner,
         ROUND(
             COUNT(CASE WHEN b.training_passed IS NOT NULL THEN 1 END)::FLOAT
@@ -94,7 +96,7 @@ v1_post_training AS (
         ) * 100 AS tp_pct
     FROM v1_src s
     LEFT JOIN v1_base b ON s.provider_id = b.provider_id
-    GROUP BY s.raw_trainer, tweek
+    GROUP BY s.raw_trainer, tweek, b.city
 ),
 
 v1_pip_base AS (
@@ -136,6 +138,7 @@ v1_final_pip_metrics AS (
   SELECT
       ts.app_week,
       S.RAW_TRAINER,
+      b.city,
       ROUND(
           100.0 * (
               COUNT(CASE WHEN cycle_no = 1 AND potential_tier = 'pip' AND completion_flag = 1 THEN 1 END)
@@ -151,13 +154,15 @@ v1_final_pip_metrics AS (
       ) AS elc_pip_pct
   FROM v1_tier_status ts
   LEFT JOIN v1_src s ON ts.provider_id = s.provider_id
-  GROUP BY ts.app_week, S.RAW_TRAINER
+  LEFT JOIN (SELECT DISTINCT provider_id, city FROM v1_base) b ON ts.provider_id = b.provider_id
+  GROUP BY ts.app_week, S.RAW_TRAINER, b.city
 ),
 
 view1 AS (
     SELECT
         coalesce(pt.created_by,post.raw_trainer) AS trainer,
         coalesce (pt.sdate,post.tweek) AS week,
+        coalesce(pt.city, post.city) AS city,
         post.Total_partner,
         pt.sp_pct,
         pt.sp_tp_pct,
@@ -176,9 +181,11 @@ view1 AS (
     full outer join v1_post_training post
         ON pt.created_by = post.raw_trainer
        AND pt.sdate = post.tweek
+       AND pt.city = post.city
     LEFT JOIN v1_final_pip_metrics pip
         ON coalesce(pt.created_by,post.raw_trainer) = pip.RAW_TRAINER
        AND coalesce(pt.sdate,post.tweek) = pip.app_week
+       AND coalesce(pt.city, post.city) = pip.city
     WHERE coalesce(pt.created_by,post.raw_trainer) IS NOT NULL
     --AND post.Total_partner>10
 ),
@@ -369,7 +376,7 @@ v2_final as (
     count(distinct case when net_status='net_request' and service_delivered='true' then customer_request_id end) as sd,
     from master_data
     where customer_category_key= 'insta_maids'
-    and responded_pro_booking in (select distinct provider_id from v1_base) -- Note: using v1_base or v2_base? original used base, but base was defined in both. Assuming v2_base here is safer but original v2 used 'base'. v1_base is more complete? Let's use v2_base to match context
+    and responded_pro_booking in (select distinct provider_id from v2_base)
     group by 1,2
     ) u on  u.responded_pro_booking=a.provider_id and u.week=a.cm_week
     --where provider_id='62c9b1b2c4c415002866407b'
@@ -456,6 +463,7 @@ view2 AS (
     SELECT
         trainer_name,
         perf_week,
+        city,
     
         SUM(total_deliveries) AS Util,
     
@@ -509,12 +517,13 @@ view2 AS (
         AS hh_pros_avg_rating
     
     FROM v2_cumulative
-    GROUP BY trainer_name, perf_week 
+    GROUP BY trainer_name, perf_week, city
     ORDER BY trainer_name, perf_week  
 ),
 
 final as(SELECT DISTINCT coalesce(v.trainer,v1.trainer_name) as trainer,
       coalesce(v.week,v1.perf_week) as week  ,
+      coalesce(v.city, v1.city) as city,
        v1.hh_eligible,
        v.sp_pct,
        v.sp_tp_pct,
@@ -532,10 +541,12 @@ final as(SELECT DISTINCT coalesce(v.trainer,v1.trainer_name) as trainer,
 FULL OUTER JOIN view2 v1
   ON v.trainer = v1.trainer_name
  AND v.week    = v1.perf_week
+ AND v.city    = v1.city
 )
        
        select trainer,
        DATE(week) as "week::multi-filter",
+       city as "city::multi-filter",
        hh_eligible,
        sp_pct,
        sp_tp_pct,
