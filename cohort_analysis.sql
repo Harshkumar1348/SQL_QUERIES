@@ -4,7 +4,8 @@ select PROVIDER_ID,
        APPROVAL_DATE,
        LAST_DELIVERY_DATE,
        CASE 
-       WHEN (LAST_DELIVERY_DATE-APPROVAL_DATE) > 30 THEN 'LLC'
+       WHEN DATEDIFF('day', APPROVAL_DATE, LAST_DELIVERY_DATE) > 30
+       THEN 'LLC'
        ELSE 'ELC'
        END AS PRO_AGE
        FROM provider__daily__facts
@@ -291,12 +292,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS language_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS language_cohort_elc_f20_rating,
+
     -- Language Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS language_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS language_cohort_llc_f20_rating,
 
     -- Foundational Cohort ELC
     CASE 
@@ -305,12 +318,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS foundational_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS foundational_cohort_elc_f20_rating,
+
     -- Foundational Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS foundational_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS foundational_cohort_llc_f20_rating,
 
     -- No Cohort ELC
     CASE 
@@ -319,12 +344,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS no_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS no_cohort_elc_f20_rating,
+
     -- No Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
-    END AS no_cohort_llc_avg_rating
+    END AS no_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS no_cohort_llc_f20_rating
 
 FROM cohort
 GROUP BY 1
@@ -339,12 +376,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS language_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS language_cohort_elc_f20_rating,
+
     -- Language Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS language_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'language Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS language_cohort_llc_f20_rating,
 
     -- Foundational Cohort ELC
     CASE 
@@ -353,12 +402,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS foundational_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS foundational_cohort_elc_f20_rating,
+
     -- Foundational Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS foundational_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'Foundational Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS foundational_cohort_llc_f20_rating,
 
     -- No Cohort ELC
     CASE 
@@ -367,12 +428,24 @@ SELECT
              / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
     END AS no_cohort_elc_avg_rating,
 
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'ELC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS no_cohort_elc_f20_rating,
+
     -- No Cohort LLC
     CASE 
         WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END) = 0 THEN NULL
         ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(avg_rating, 0) * COALESCE(total_rated_jobs, 0) ELSE 0 END)
              / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(total_rated_jobs, 0) ELSE 0 END), 0)
-    END AS no_cohort_llc_avg_rating
+    END AS no_cohort_llc_avg_rating,
+
+    CASE 
+        WHEN SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END) = 0 THEN NULL
+        ELSE SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN COALESCE(f20_avg_rating, 0) * LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN cohort = 'No Cohort' AND PRO_AGE = 'LLC' THEN LEAST(COALESCE(total_rated_jobs, 0), 20) ELSE 0 END), 0)
+    END AS no_cohort_llc_f20_rating
 
 FROM cohort
 GROUP BY 1
