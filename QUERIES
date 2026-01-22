@@ -1,1 +1,131 @@
-SQL_PRACtICE
+-- Query: Count of providers who churned in one week and got reactivated in the next week
+-- Key requirement: Partner must have approval_date
+
+WITH l7d_for_net_churn AS (
+    SELECT 
+        pdf.provider_id,
+        CASE 
+            WHEN SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END) > 8
+                THEN 'Working'
+            ELSE 'Not Working'
+        END AS l7d_status
+    FROM provider__daily__facts pdf
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+        ON pdf.provider_id = acm.provider_id
+        AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
+        AND acm.start_hour_local BETWEEN 8 AND 19
+    WHERE pdf.approval_date >= '2025-01-01'
+      AND pdf.provider_name NOT ILIKE '%test%'
+      AND pdf.reporting_supercategory_new = 'Insta Help'
+    GROUP BY 1
+),
+
+provider_current_status_net AS (
+    SELECT
+        pdf.provider_id,
+        pdf.city AS reporting_city,
+        CASE 
+            WHEN COALESCE(l.l7d_status, 'Unknown') = 'Working' THEN 'Active'
+            ELSE 'Churned'
+        END AS pro_current_status
+    FROM provider__daily__facts pdf
+    LEFT JOIN l7d_for_net_churn l
+        ON pdf.provider_id = l.provider_id
+    WHERE pdf.reporting_supercategory_new = 'Insta Help'
+      AND pdf.city NOT IN ('Singapore','Mysore')
+      AND pdf.approval_date IS NOT NULL
+),
+
+provider_weeks AS (
+    SELECT DISTINCT 
+        provider_id, 
+        DATE_TRUNC('week', DATE(bdate_final)) AS week
+    FROM request__daily__facts
+    WHERE customer_category_key = 'insta_maids'
+      AND country = 'India'
+      AND service_delivered = 1
+      AND DATE(bdate_final) >= '2024-04-01'
+),
+
+provider_weeks_combined AS (
+    SELECT DISTINCT
+        p.provider_id,
+        p.city AS reporting_city,
+        DATE(p.approval_date) AS approval_date,
+        g.week AS week_start
+    FROM provider__daily__facts p
+    JOIN (
+        SELECT DISTINCT DATE_TRUNC('week', DATE(bdate_final)) AS week
+        FROM request__daily__facts
+        WHERE customer_category_key = 'insta_maids'
+          AND country = 'India'
+          AND DATE(bdate_final) >= '2024-04-01'
+    ) g ON TRUE
+    WHERE p.customer_category_key = 'insta_maids'
+      AND p.country = 'India'
+      AND p.city NOT IN ('Singapore','Mysore')
+      AND p.approval_date IS NOT NULL  -- ADDED: Ensure partner has approval_date
+),
+
+provider_weekly_markings AS (
+    SELECT
+        pwc.provider_id,
+        pwc.week_start,
+        pwc.reporting_city,
+        COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END),0) AS marked_cnt,
+        CASE 
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END),0) > 8
+                THEN 'Working'
+            ELSE 'Not Working'
+        END AS week_mark_status
+    FROM provider_weeks_combined pwc
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+        ON pwc.provider_id = acm.provider_id
+        AND DATE_TRUNC('week', DATE(acm.date)) = pwc.week_start
+        AND acm.start_hour_local BETWEEN 8 AND 19
+    GROUP BY 1,2,3
+),
+
+provider_weekly_markings_lag AS (
+    SELECT
+        provider_id,
+        reporting_city,
+        week_start,
+        week_mark_status,
+        LAG(week_mark_status)
+            OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_week_status
+    FROM provider_weekly_markings
+),
+
+-- Churn events: Working -> Not Working
+weekly_churn_events AS (
+    SELECT
+        provider_id,
+        reporting_city,
+        week_start AS churn_week
+    FROM provider_weekly_markings_lag
+    WHERE lag_week_status = 'Working'
+      AND week_mark_status = 'Not Working'
+),
+
+-- Reactivation events: Not Working -> Working (and currently Active)
+weekly_reactivation_events AS (
+    SELECT
+        pw.provider_id,
+        pcs.reporting_city,
+        week_start AS reactivation_week
+    FROM provider_weekly_markings_lag pw
+    JOIN provider_current_status_net pcs
+        ON pw.provider_id = pcs.provider_id
+    WHERE lag_week_status = 'Not Working'
+      AND week_mark_status = 'Working'
+      AND pcs.pro_current_status = 'Active'
+)
+
+-- FINAL RESULT: Count of providers churned in week W and reactivated in week W+1
+SELECT
+    COUNT(DISTINCT r.provider_id) AS reactivated_provider_count
+FROM weekly_churn_events c
+JOIN weekly_reactivation_events r
+  ON c.provider_id = r.provider_id
+ AND r.reactivation_week = DATEADD('week', 1, c.churn_week);
