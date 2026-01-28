@@ -314,23 +314,9 @@ weekly_metrics AS (
     LEFT JOIN gross_churn_agg gc
         ON k.week = gc.week AND k.city = gc.reporting_city
 ),
--- Calculate NEXT_WEEK_APC using LAG to get previous week's values
-weekly_metrics_with_next_apc AS (
-    SELECT
-        week,
-        city,
-        reactivated_providers,
-        approvals,
-        apc,
-        net_churn,
-        gross_churn,
-        -- NEXT_WEEK_APC = Previous week's (APC + Approvals - Gross Churn + Reactivations)
-        LAG(apc, 1) OVER (PARTITION BY city ORDER BY week) 
-            + LAG(approvals, 1) OVER (PARTITION BY city ORDER BY week) 
-            - LAG(gross_churn, 1) OVER (PARTITION BY city ORDER BY week) 
-            + LAG(reactivated_providers, 1) OVER (PARTITION BY city ORDER BY week) AS next_week_apc
-    FROM weekly_metrics
-)
+-- Final output with NEXT_WEEK_APC calculation
+-- NEXT_WEEK_APC = Current week's (APC + Approvals - Gross Churn + Reactivations)
+-- This predicts next week's APC based on current week's metrics
 SELECT
     TO_CHAR(week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
     city AS "city::multi-filter",
@@ -339,6 +325,6 @@ SELECT
     apc AS APC,
     net_churn,
     gross_churn,
-    next_week_apc AS NEXT_WEEK_APC
-FROM weekly_metrics_with_next_apc
+    (apc + approvals - gross_churn + reactivated_providers) AS NEXT_WEEK_APC
+FROM weekly_metrics
 ORDER BY 1, 2;
