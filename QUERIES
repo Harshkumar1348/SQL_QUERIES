@@ -334,3 +334,79 @@ LEFT JOIN net_churn_agg nc
 LEFT JOIN gross_churn_agg gc
     ON k.week = gc.week AND k.city = gc.reporting_city
 ORDER BY 1, 2;
+
+
+-- ============================================================================
+-- QUERY 2: GROSS CHURN PROVIDER DETAILS (Provider ID and Gross Churn Week)
+-- ============================================================================
+
+WITH provider_weeks_combined AS (
+    SELECT DISTINCT
+        p.provider_id,
+        p.city AS reporting_city,
+        DATE(p.approval_date) AS approval_date,
+        DATE_TRUNC('week', g.week) AS week_start
+    FROM provider__daily__facts p
+    JOIN (
+        SELECT DISTINCT DATE_TRUNC('week', DATE(bdate_final)) AS week
+        FROM request__daily__facts
+        WHERE customer_category_key = 'insta_maids'
+          AND country = 'India'
+          AND reporting_city <> 'Singapore'
+          AND DATE(bdate_final) >= '2024-04-01'
+    ) g ON TRUE
+    WHERE p.customer_category_key = 'insta_maids'
+      AND p.provider_id NOT IN (
+            '649809118e2b920027381c8b','6540b306f93f8f0024edae02',
+            '652e3bd7be83ab00347c41b9','65d743bb2894c80027f18563',
+            '6593d80bd91e7c00253bc68b'
+      )
+      AND p.country = 'India'
+      AND p.city NOT IN ('Singapore','Mysore')
+),
+
+provider_weekly_markings AS (
+    SELECT
+        pwc.provider_id,
+        pwc.reporting_city,
+        pwc.week_start,
+        COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
+        CASE 
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 8 
+                THEN 'Working'
+            ELSE 'Not Working'
+        END AS week_mark_status
+    FROM provider_weeks_combined pwc
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+      ON pwc.provider_id = acm.provider_id
+      AND DATE_TRUNC('week', DATE(acm.date)) = pwc.week_start
+      AND acm.start_hour_local BETWEEN 8 AND 19
+    GROUP BY 1, 2, 3
+),
+
+provider_weekly_markings_with_lag AS (
+    SELECT
+        provider_id,
+        reporting_city,
+        week_start,
+        marked_count_week,
+        week_mark_status,
+        LAG(week_mark_status, 1) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_1_week_mark_status,
+        LAG(week_mark_status, 2) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_2_week_mark_status,
+        LAG(week_mark_status, 3) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_3_week_mark_status
+    FROM provider_weekly_markings
+)
+
+-- Gross Churn Provider Details
+SELECT
+    provider_id,
+    reporting_city AS city,
+    TO_CHAR(week_start, 'YYYY-MM-DD') AS gross_churn_week,
+    lag_3_week_mark_status AS week_minus_3_status,
+    lag_2_week_mark_status AS week_minus_2_status,
+    lag_1_week_mark_status AS week_minus_1_status
+FROM provider_weekly_markings_with_lag
+WHERE lag_1_week_mark_status = 'Not Working'
+  AND lag_2_week_mark_status = 'Not Working'
+  AND lag_3_week_mark_status = 'Working'
+ORDER BY gross_churn_week, city, provider_id;
