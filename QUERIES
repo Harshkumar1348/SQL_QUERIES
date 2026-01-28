@@ -315,7 +315,7 @@ weekly_metrics AS (
         ON k.week = gc.week AND k.city = gc.reporting_city
 ),
 -- Calculate APC using previous week's metrics
--- APC = Previous Week APC + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
+-- APC = Previous Week APC_RAW + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
 weekly_metrics_with_apc AS (
     SELECT
         week,
@@ -325,10 +325,10 @@ weekly_metrics_with_apc AS (
         apc_raw,
         net_churn,
         gross_churn,
-        LAG(apc_raw, 1) OVER (PARTITION BY city ORDER BY week) 
-            + LAG(approvals, 1) OVER (PARTITION BY city ORDER BY week) 
-            - LAG(gross_churn, 1) OVER (PARTITION BY city ORDER BY week) 
-            + LAG(reactivated_providers, 1) OVER (PARTITION BY city ORDER BY week) AS APC
+        LAG(apc_raw, 1) OVER (PARTITION BY city ORDER BY week) AS prev_apc,
+        LAG(approvals, 1) OVER (PARTITION BY city ORDER BY week) AS prev_approvals,
+        LAG(gross_churn, 1) OVER (PARTITION BY city ORDER BY week) AS prev_gross_churn,
+        LAG(reactivated_providers, 1) OVER (PARTITION BY city ORDER BY week) AS prev_reactivations
     FROM weekly_metrics
 )
 SELECT
@@ -336,7 +336,7 @@ SELECT
     city AS "city::multi-filter",
     reactivated_providers,
     approvals AS Approvals,
-    APC,
+    (COALESCE(prev_apc, 0) + COALESCE(prev_approvals, 0) - COALESCE(prev_gross_churn, 0) + COALESCE(prev_reactivations, 0)) AS APC,
     net_churn,
     gross_churn
 FROM weekly_metrics_with_apc
