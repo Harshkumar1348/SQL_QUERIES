@@ -1,4 +1,4 @@
-WITH l7d_for_net_churn AS (
+WITH RECURSIVE l7d_for_net_churn AS (
     SELECT 
         pdf.provider_id,
         CASE 
@@ -52,7 +52,6 @@ provider_weeks AS (
       AND service_delivered = 1
       AND DATE(bdate_final) >= '2024-04-01'
 ),
--- FIX: Only include weeks ON OR AFTER provider's approval date (prevents cross join explosion)
 provider_weeks_combined AS (
     SELECT DISTINCT
         p.provider_id,
@@ -67,7 +66,7 @@ provider_weeks_combined AS (
           AND country = 'India'
           AND reporting_city <> 'Singapore'
           AND DATE(bdate_final) >= '2024-04-01'
-    ) g ON g.week >= DATE_TRUNC('week', p.approval_date)  -- FIX: Only weeks after approval
+    ) g ON g.week >= DATE_TRUNC('week', p.approval_date)
     WHERE p.customer_category_key = 'insta_maids'
       AND p.provider_id NOT IN (
             '649809118e2b920027381c8b','6540b306f93f8f0024edae02',
@@ -115,9 +114,6 @@ provider_weekly_markings_with_lag AS (
         LAG(week_mark_status, 3) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_3_week_mark_status
     FROM provider_weekly_markings
 ),
--- Gross Churn Logic:
--- Partner was Working 2 weeks ago, Not Working last week -> Count as gross churn this week
--- FIX: Added filter to ensure both lag values are not null (prevents counting first weeks)
 gross_churn_agg AS (
     SELECT
         week_start AS week,
@@ -126,8 +122,8 @@ gross_churn_agg AS (
     FROM provider_weekly_markings_with_lag
     WHERE lag_1_week_mark_status = 'Not Working'
       AND lag_2_week_mark_status = 'Working'
-      AND lag_1_week_mark_status IS NOT NULL  -- FIX: Ensure lag values exist
-      AND lag_2_week_mark_status IS NOT NULL  -- FIX: Ensure lag values exist
+      AND lag_1_week_mark_status IS NOT NULL  
+      AND lag_2_week_mark_status IS NOT NULL  
     GROUP BY 1, 2
 ),
 weekly_churn_events AS (
@@ -299,26 +295,74 @@ distinct_keys AS (
     FROM master_keys 
     WHERE week IS NOT NULL 
       AND city IS NOT NULL
-      AND week <= DATE_TRUNC('week', CURRENT_DATE)  -- No future weeks
+      AND week <= DATE_TRUNC('week', CURRENT_DATE)
+),
+-- Combine all raw metrics per week/city with row numbers for recursive calculation
+weekly_metrics_base AS (
+    SELECT
+        k.week,
+        k.city,
+        COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
+        COALESCE(a.partners_approved, 0) AS approvals,
+        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_original,
+        COALESCE(nc.net_churn_count, 0) AS net_churn,
+        COALESCE(gc.gross_churn_count, 0) AS gross_churn,
+        ROW_NUMBER() OVER (PARTITION BY k.city ORDER BY k.week) AS week_num
+    FROM distinct_keys k
+    LEFT JOIN reactivations_agg r 
+        ON k.week = r.week_start AND k.city = r.reporting_city
+    LEFT JOIN approvals a 
+        ON k.week = a.week AND k.city = a.city
+    LEFT JOIN hub_tagged_agg h
+        ON k.week = h.week AND k.city = h.city
+    LEFT JOIN net_churn_agg nc
+        ON k.week = nc.week AND k.city = nc.reporting_city
+    LEFT JOIN gross_churn_agg gc
+        ON k.week = gc.week AND k.city = gc.reporting_city
+),
+-- Recursive CTE: First week uses original APC, subsequent weeks use formula
+apc_recursive AS (
+    -- Base case: First week for each city (MIN week) - use original APC
+    SELECT 
+        week,
+        city,
+        reactivated_providers,
+        approvals,
+        apc_original,
+        apc_original AS APC,  -- First week: Use original APC
+        net_churn,
+        gross_churn,
+        week_num
+    FROM weekly_metrics_base
+    WHERE week_num = 1
+    
+    UNION ALL
+    
+    -- Recursive case: Subsequent weeks use formula
+    -- APC = Previous Week APC + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
+    SELECT 
+        wm.week,
+        wm.city,
+        wm.reactivated_providers,
+        wm.approvals,
+        wm.apc_original,
+        (ar.APC + ar.approvals - ar.gross_churn + ar.reactivated_providers) AS APC,
+        wm.net_churn,
+        wm.gross_churn,
+        wm.week_num
+    FROM weekly_metrics_base wm
+    INNER JOIN apc_recursive ar 
+        ON wm.city = ar.city 
+        AND wm.week_num = ar.week_num + 1
 )
 SELECT
-    TO_CHAR(k.week, 'YYYY-MM-DD') AS "week::multi-filter",
-    k.city AS "city::multi-filter",
-    COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
-    COALESCE(a.partners_approved, 0) AS Approvals,
-    COALESCE(h.hub_tagged_cm_marked_pros, 0) AS APC,
-    COALESCE(nc.net_churn_count, 0) AS net_churn,
-    COALESCE(gc.gross_churn_count, 0) AS gross_churn
-FROM distinct_keys k
-LEFT JOIN reactivations_agg r 
-    ON k.week = r.week_start AND k.city = r.reporting_city
-LEFT JOIN approvals a 
-    ON k.week = a.week AND k.city = a.city
-LEFT JOIN hub_tagged_agg h
-    ON k.week = h.week AND k.city = h.city
-LEFT JOIN net_churn_agg nc
-    ON k.week = nc.week AND k.city = nc.reporting_city
-LEFT JOIN gross_churn_agg gc
-    ON k.week = gc.week AND k.city = gc.reporting_city
-WHERE k.week <= DATE_TRUNC('week', CURRENT_DATE)
+    TO_CHAR(week, 'YYYY-MM-DD') AS "week::multi-filter",
+    city AS "city::multi-filter",
+    reactivated_providers,
+    approvals AS Approvals,
+    APC,
+    net_churn,
+    gross_churn
+FROM apc_recursive
+WHERE week <= DATE_TRUNC('week', CURRENT_DATE)
 ORDER BY 1, 2;
