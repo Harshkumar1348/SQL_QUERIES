@@ -114,19 +114,16 @@ provider_weekly_markings_with_lag AS (
         LAG(week_mark_status, 3) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_3_week_mark_status
     FROM provider_weekly_markings
 ),
--- Gross Churn: Provider was Working 3 weeks ago, Not Working for 2 consecutive weeks
+-- Gross Churn: Provider was Working last week, Not Working this week (simple transition)
 gross_churn_agg AS (
     SELECT
         week_start AS week,
         reporting_city,
         COUNT(DISTINCT provider_id) AS gross_churn_count
     FROM provider_weekly_markings_with_lag
-    WHERE lag_1_week_mark_status = 'Not Working'
-      AND lag_2_week_mark_status = 'Not Working'
-      AND lag_3_week_mark_status = 'Working'
-      AND lag_1_week_mark_status IS NOT NULL  
-      AND lag_2_week_mark_status IS NOT NULL 
-      AND lag_3_week_mark_status IS NOT NULL
+    WHERE week_mark_status = 'Not Working'           -- Current week: Not Working
+      AND lag_1_week_mark_status = 'Working'         -- Previous week: Working
+      AND lag_1_week_mark_status IS NOT NULL
     GROUP BY 1, 2
 ),
 weekly_churn_events AS (
