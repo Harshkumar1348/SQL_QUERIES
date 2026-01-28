@@ -78,6 +78,7 @@ provider_weeks_combined AS (
       )
       AND p.country = 'India'
       AND p.city NOT IN ('Singapore','Mysore')
+      AND p.approval_date IS NOT NULL
 ),
 
 min_bdate AS (
@@ -93,6 +94,7 @@ provider_weekly_markings AS (
         pwc.provider_id,
         pwc.reporting_city,
         pwc.week_start,
+        pwc.approval_date,
         COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
         CASE 
             WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 8 
@@ -104,7 +106,8 @@ provider_weekly_markings AS (
       ON pwc.provider_id = acm.provider_id
       AND DATE_TRUNC('week', DATE(acm.date)) = pwc.week_start
       AND acm.start_hour_local BETWEEN 8 AND 19
-    GROUP BY 1, 2, 3
+    WHERE pwc.approval_date IS NOT NULL
+    GROUP BY 1, 2, 3, 4
 ),
 
 provider_weekly_markings_with_lag AS (
@@ -112,6 +115,7 @@ provider_weekly_markings_with_lag AS (
         provider_id,
         reporting_city,
         week_start,
+        approval_date,
         marked_count_week,
         week_mark_status,
         LAG(week_mark_status, 1) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_1_week_mark_status,
@@ -120,7 +124,8 @@ provider_weekly_markings_with_lag AS (
     FROM provider_weekly_markings
 ),
 
--- Gross Churn: Partners who were "Not Working" in past 2 consecutive weeks BUT were "Working" before that
+-- Gross Churn: Partners with approval_date who were "Not Working" in past 2 consecutive weeks BUT were "Working" before that
+-- Only for ongoing week (not future weeks)
 gross_churn_agg AS (
     SELECT
         week_start AS week,
@@ -130,6 +135,8 @@ gross_churn_agg AS (
     WHERE lag_1_week_mark_status = 'Not Working'
       AND lag_2_week_mark_status = 'Not Working'
       AND lag_3_week_mark_status = 'Working'
+      AND approval_date IS NOT NULL
+      AND week_start <= DATE_TRUNC('week', CURRENT_DATE)
     GROUP BY 1, 2
 ),
 
@@ -311,7 +318,11 @@ master_keys AS (
 ),
 
 distinct_keys AS (
-    SELECT DISTINCT week, city FROM master_keys WHERE week IS NOT NULL AND city IS NOT NULL
+    SELECT DISTINCT week, city 
+    FROM master_keys 
+    WHERE week IS NOT NULL 
+      AND city IS NOT NULL
+      AND week <= DATE_TRUNC('week', CURRENT_DATE)
 )
 
 SELECT
@@ -338,6 +349,7 @@ ORDER BY 1, 2;
 
 -- ============================================================================
 -- QUERY 2: GROSS CHURN PROVIDER DETAILS (Provider ID and Gross Churn Week)
+-- Only ongoing week, only partners with approval_date
 -- ============================================================================
 
 WITH provider_weeks_combined AS (
@@ -363,6 +375,7 @@ WITH provider_weeks_combined AS (
       )
       AND p.country = 'India'
       AND p.city NOT IN ('Singapore','Mysore')
+      AND p.approval_date IS NOT NULL
 ),
 
 provider_weekly_markings AS (
@@ -370,6 +383,7 @@ provider_weekly_markings AS (
         pwc.provider_id,
         pwc.reporting_city,
         pwc.week_start,
+        pwc.approval_date,
         COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
         CASE 
             WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 8 
@@ -381,7 +395,8 @@ provider_weekly_markings AS (
       ON pwc.provider_id = acm.provider_id
       AND DATE_TRUNC('week', DATE(acm.date)) = pwc.week_start
       AND acm.start_hour_local BETWEEN 8 AND 19
-    GROUP BY 1, 2, 3
+    WHERE pwc.approval_date IS NOT NULL
+    GROUP BY 1, 2, 3, 4
 ),
 
 provider_weekly_markings_with_lag AS (
@@ -389,6 +404,7 @@ provider_weekly_markings_with_lag AS (
         provider_id,
         reporting_city,
         week_start,
+        approval_date,
         marked_count_week,
         week_mark_status,
         LAG(week_mark_status, 1) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_1_week_mark_status,
@@ -397,7 +413,7 @@ provider_weekly_markings_with_lag AS (
     FROM provider_weekly_markings
 )
 
--- Gross Churn Provider Details
+-- Gross Churn Provider Details (only ongoing week, only with approval_date)
 SELECT
     provider_id,
     reporting_city AS city,
@@ -409,4 +425,6 @@ FROM provider_weekly_markings_with_lag
 WHERE lag_1_week_mark_status = 'Not Working'
   AND lag_2_week_mark_status = 'Not Working'
   AND lag_3_week_mark_status = 'Working'
+  AND approval_date IS NOT NULL
+  AND week_start <= DATE_TRUNC('week', CURRENT_DATE)
 ORDER BY gross_churn_week, city, provider_id;
