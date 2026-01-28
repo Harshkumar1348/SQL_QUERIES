@@ -10,10 +10,11 @@ WITH l7d_for_net_churn AS (
         ON pdf.provider_id = acm.provider_id
         AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
         AND acm.start_hour_local BETWEEN 8 AND 19
-    WHERE pdf.approval_date >= '2025-01-01'
+    WHERE pdf.approval_date >= '2024-04-01'
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
-      AND DATE_TRUNC('week', pdf.approval_date) <> DATE_TRUNC('week', pdf.last_delivery_date)
+      -- Removed: AND DATE_TRUNC('week', pdf.approval_date) <> DATE_TRUNC('week', pdf.last_delivery_date)
+      -- Removed explicit IS NOT NULL as date filter covers it, but keeping it won't hurt.
       AND pdf.approval_date IS NOT NULL
     GROUP BY 1
 ),
