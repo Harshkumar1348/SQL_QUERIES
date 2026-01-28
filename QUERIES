@@ -2,7 +2,7 @@ WITH RECURSIVE l7d_for_net_churn AS (
     SELECT 
         pdf.provider_id,
         CASE 
-            WHEN SUM(CASE WHEN status = 'marked working' THEN 1 ELSE 0 END) >= 4 THEN 'Working'
+            WHEN SUM(CASE WHEN status = 'marked working' THEN 1 ELSE 0 END) > 4 THEN 'Working'
             ELSE 'Not Working'
         END AS L7D_status
     FROM provider__daily__facts pdf
@@ -91,7 +91,7 @@ provider_weekly_markings AS (
         pwc.week_start,
         COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
         CASE 
-            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) >= 4
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 4
                 THEN 'Working'
             ELSE 'Not Working'
         END AS week_mark_status
@@ -114,6 +114,7 @@ provider_weekly_markings_with_lag AS (
         LAG(week_mark_status, 3) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_3_week_mark_status
     FROM provider_weekly_markings
 ),
+-- Gross Churn: Provider was Working 3 weeks ago, Not Working for 2 consecutive weeks
 gross_churn_agg AS (
     SELECT
         week_start AS week,
@@ -121,9 +122,11 @@ gross_churn_agg AS (
         COUNT(DISTINCT provider_id) AS gross_churn_count
     FROM provider_weekly_markings_with_lag
     WHERE lag_1_week_mark_status = 'Not Working'
-      AND lag_2_week_mark_status = 'Working'
+      AND lag_2_week_mark_status = 'Not Working'
+      AND lag_3_week_mark_status = 'Working'
       AND lag_1_week_mark_status IS NOT NULL  
-      AND lag_2_week_mark_status IS NOT NULL  
+      AND lag_2_week_mark_status IS NOT NULL 
+      AND lag_3_week_mark_status IS NOT NULL
     GROUP BY 1, 2
 ),
 weekly_churn_events AS (
@@ -270,23 +273,12 @@ hub_tagged_agg AS (
     FROM pp
     GROUP BY 1, 2
 ),
-net_churn_agg AS (
-    SELECT
-        reporting_city,
-        ldd_week AS week,
-        COUNT(DISTINCT provider_id) AS net_churn_count
-    FROM provider_current_status_net
-    WHERE pro_current_status = 'Churned'
-    GROUP BY 1, 2
-),
 master_keys AS (
     SELECT week_start AS week, reporting_city AS city FROM reactivations_agg
     UNION
     SELECT week, city FROM approvals
     UNION
     SELECT week, city FROM hub_tagged_agg
-    UNION
-    SELECT week, reporting_city AS city FROM net_churn_agg
     UNION
     SELECT week, reporting_city AS city FROM gross_churn_agg
 ),
@@ -297,7 +289,6 @@ distinct_keys AS (
       AND city IS NOT NULL
       AND week <= DATE_TRUNC('week', CURRENT_DATE)
 ),
--- Combine all raw metrics per week/city with row numbers for recursive calculation
 weekly_metrics_base AS (
     SELECT
         k.week,
@@ -305,8 +296,9 @@ weekly_metrics_base AS (
         COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
         COALESCE(a.partners_approved, 0) AS approvals,
         COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_original,
-        COALESCE(nc.net_churn_count, 0) AS net_churn,
         COALESCE(gc.gross_churn_count, 0) AS gross_churn,
+        -- FIX: Net Churn = Gross Churn - Reactivations (ensures gross >= net)
+        GREATEST(COALESCE(gc.gross_churn_count, 0) - COALESCE(r.reactivated_providers, 0), 0) AS net_churn,
         ROW_NUMBER() OVER (PARTITION BY k.city ORDER BY k.week) AS week_num
     FROM distinct_keys k
     LEFT JOIN reactivations_agg r 
@@ -315,21 +307,18 @@ weekly_metrics_base AS (
         ON k.week = a.week AND k.city = a.city
     LEFT JOIN hub_tagged_agg h
         ON k.week = h.week AND k.city = h.city
-    LEFT JOIN net_churn_agg nc
-        ON k.week = nc.week AND k.city = nc.reporting_city
     LEFT JOIN gross_churn_agg gc
         ON k.week = gc.week AND k.city = gc.reporting_city
 ),
--- Recursive CTE: First week uses original APC, subsequent weeks use formula
 apc_recursive AS (
-    -- Base case: First week for each city (MIN week) - use original APC
+    -- Base case: First week for each city - use original APC
     SELECT 
         week,
         city,
         reactivated_providers,
         approvals,
         apc_original,
-        apc_original AS APC,  -- First week: Use original APC
+        apc_original AS APC,
         net_churn,
         gross_churn,
         week_num
@@ -338,8 +327,7 @@ apc_recursive AS (
     
     UNION ALL
     
-    -- Recursive case: Subsequent weeks use formula
-    -- APC = Previous Week APC + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
+    -- Recursive case: APC = Previous APC + Previous Approvals - Previous Gross Churn + Previous Reactivations
     SELECT 
         wm.week,
         wm.city,
