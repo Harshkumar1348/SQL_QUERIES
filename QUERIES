@@ -1,4 +1,8 @@
-WITH l7d_for_net_churn AS (
+-- ============================================================================
+-- QUERY A: MAIN AGGREGATED QUERY (WITH NET CHURN LOGIC FROM QUERY B)
+-- ============================================================================
+
+WITH l7d_current AS (
     SELECT 
         pdf.provider_id,
         CASE 
@@ -10,10 +14,9 @@ WITH l7d_for_net_churn AS (
         ON pdf.provider_id = acm.provider_id
         AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
         AND acm.start_hour_local BETWEEN 8 AND 19
-    WHERE pdf.approval_date >= '2025-01-01'
+    WHERE pdf.approval_date >= '2024-04-01'
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
-      AND DATE_TRUNC('week', pdf.approval_date) <> DATE_TRUNC('week', pdf.last_delivery_date)
     GROUP BY 1
 ),
 
@@ -22,21 +25,17 @@ provider_current_status_net AS (
         pdf.provider_id,
         pdf.city AS reporting_city,
         CASE 
-            WHEN last_delivery_date IS NULL THEN TO_CHAR(DATE_TRUNC('month', DATE(approval_date)), 'YYYY-MM-DD') 
-            ELSE TO_CHAR(DATE_TRUNC('month', DATE(last_delivery_date)), 'YYYY-MM-DD') 
-        END AS ldd_month,
-        CASE 
-            WHEN last_delivery_date IS NULL THEN DATE_TRUNC('week', DATE(approval_date))
-            ELSE DATE_TRUNC('week', DATE(last_delivery_date))
+            WHEN last_delivery_date IS NULL THEN TO_CHAR(DATE_TRUNC('week', DATE(approval_date)), 'YYYY-MM-DD') 
+            ELSE TO_CHAR(DATE_TRUNC('week', DATE(last_delivery_date)), 'YYYY-MM-DD') 
         END AS ldd_week,
         CASE 
-            WHEN COALESCE(l7d_for_net_churn.L7D_status, 'Unknown') = 'Not Working' THEN 'Churned'
-            WHEN COALESCE(l7d_for_net_churn.L7D_status, 'Unknown') = 'Working' THEN 'Active'
+            WHEN COALESCE(l7d_current.L7D_status, 'Unknown') = 'Not Working' THEN 'Churned'
+            WHEN COALESCE(l7d_current.L7D_status, 'Unknown') = 'Working' THEN 'Active'
             WHEN last_delivery_date IS NULL 
                  AND DATE(approval_date) >= CURRENT_DATE - 7 THEN 'Active'
         END AS pro_current_status
     FROM provider__daily__facts pdf
-    LEFT JOIN l7d_for_net_churn ON pdf.provider_id = l7d_for_net_churn.provider_id
+    LEFT JOIN l7d_current ON pdf.provider_id = l7d_current.provider_id
     WHERE pdf.reporting_supercategory_new = 'Insta Help'
       AND pdf.city NOT IN ('Singapore','Mysore')
       AND approval_date IS NOT NULL
@@ -305,7 +304,7 @@ master_keys AS (
     UNION
     SELECT week, city FROM hub_tagged_agg
     UNION
-    SELECT week, reporting_city AS city FROM net_churn_agg
+    SELECT DATE(week) AS week, reporting_city AS city FROM net_churn_agg
     UNION
     SELECT week, reporting_city AS city FROM gross_churn_agg
 ),
@@ -330,7 +329,7 @@ LEFT JOIN approvals a
 LEFT JOIN hub_tagged_agg h
     ON k.week = h.week AND k.city = h.city
 LEFT JOIN net_churn_agg nc
-    ON k.week = nc.week AND k.city = nc.reporting_city
+    ON k.week = DATE(nc.week) AND k.city = nc.reporting_city
 LEFT JOIN gross_churn_agg gc
     ON k.week = gc.week AND k.city = gc.reporting_city
 ORDER BY 1, 2;
