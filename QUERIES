@@ -15,6 +15,7 @@ WITH l7d_current AS (
         AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
         AND acm.start_hour_local BETWEEN 8 AND 19
     WHERE pdf.approval_date >= '2024-04-01'
+      AND pdf.approval_date IS NOT NULL
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
     GROUP BY 1
