@@ -1,4 +1,4 @@
-WITH l7d_for_net_churn AS (
+WITH RECURSIVE l7d_for_net_churn AS (
     SELECT 
         pdf.provider_id,
         CASE 
@@ -13,7 +13,6 @@ WITH l7d_for_net_churn AS (
     WHERE pdf.approval_date >= '2025-01-01'
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
-      AND DATE_TRUNC('week', pdf.approval_date) <> DATE_TRUNC('week', pdf.last_delivery_date)
       AND pdf.approval_date IS NOT NULL
     GROUP BY 1
 ),
@@ -292,16 +291,17 @@ master_keys AS (
 distinct_keys AS (
     SELECT DISTINCT week, city FROM master_keys WHERE week IS NOT NULL AND city IS NOT NULL
 ),
--- Combine all metrics per week/city
-weekly_metrics AS (
+-- Get all raw metrics with row numbers for recursive calculation
+weekly_metrics_base AS (
     SELECT
         k.week,
         k.city,
         COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
         COALESCE(a.partners_approved, 0) AS approvals,
-        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_raw,
+        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_original,
         COALESCE(nc.net_churn_count, 0) AS net_churn,
-        COALESCE(gc.gross_churn_count, 0) AS gross_churn
+        COALESCE(gc.gross_churn_count, 0) AS gross_churn,
+        ROW_NUMBER() OVER (PARTITION BY k.city ORDER BY k.week) AS week_num
     FROM distinct_keys k
     LEFT JOIN reactivations_agg r 
         ON k.week = r.week_start AND k.city = r.reporting_city
@@ -314,30 +314,53 @@ weekly_metrics AS (
     LEFT JOIN gross_churn_agg gc
         ON k.week = gc.week AND k.city = gc.reporting_city
 ),
--- Calculate APC using previous week's metrics
--- APC = Previous Week APC_RAW + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
-weekly_metrics_with_apc AS (
-    SELECT
+-- Recursive CTE to calculate APC week by week
+apc_recursive AS (
+    -- Base case: first week for each city (use original APC)
+    SELECT 
         week,
         city,
         reactivated_providers,
         approvals,
-        apc_raw,
+        apc_original,
+        apc_original AS APC,
         net_churn,
         gross_churn,
-        LAG(apc_raw, 1) OVER (PARTITION BY city ORDER BY week) AS prev_apc,
-        LAG(approvals, 1) OVER (PARTITION BY city ORDER BY week) AS prev_approvals,
-        LAG(gross_churn, 1) OVER (PARTITION BY city ORDER BY week) AS prev_gross_churn,
-        LAG(reactivated_providers, 1) OVER (PARTITION BY city ORDER BY week) AS prev_reactivations
-    FROM weekly_metrics
+        week_num
+    FROM weekly_metrics_base
+    WHERE week_num = 1
+    
+    UNION ALL
+    
+    -- Recursive case: calculate APC based on previous week
+    SELECT 
+        wm.week,
+        wm.city,
+        wm.reactivated_providers,
+        wm.approvals,
+        wm.apc_original,
+        CASE 
+            -- Before December: use original APC
+            WHEN wm.week < DATE_TRUNC('week', DATE('2025-12-01'))
+            THEN wm.apc_original
+            -- From December onwards: Previous APC + Previous Approvals - Previous Gross Churn + Previous Reactivations
+            ELSE ar.APC + ar.approvals - ar.gross_churn + ar.reactivated_providers
+        END AS APC,
+        wm.net_churn,
+        wm.gross_churn,
+        wm.week_num
+    FROM weekly_metrics_base wm
+    INNER JOIN apc_recursive ar 
+        ON wm.city = ar.city 
+        AND wm.week_num = ar.week_num + 1
 )
 SELECT
     TO_CHAR(week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
     city AS "city::multi-filter",
     reactivated_providers,
     approvals AS Approvals,
-    (COALESCE(prev_apc, 0) + COALESCE(prev_approvals, 0) - COALESCE(prev_gross_churn, 0) + COALESCE(prev_reactivations, 0)) AS APC,
+    APC,
     net_churn,
     gross_churn
-FROM weekly_metrics_with_apc
+FROM apc_recursive
 ORDER BY 1, 2;
