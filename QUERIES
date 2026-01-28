@@ -1,1 +1,36 @@
-SQL_PRACtICE
+SQL_PRACTICE
+
+-- Hub Level Ratings for Bangalore City
+WITH base AS (
+    SELECT 
+        provider_id,
+        city,
+        RATING,
+        BDATE
+    FROM PUBLIC.MASTER_DATA_EXPLORE_TABLE
+),
+
+current_hub AS (
+    SELECT
+        e.provider_id,
+        e.primary_hub_id,
+        s.hub_name,
+        ROW_NUMBER() OVER (PARTITION BY e.provider_id ORDER BY e.updated_at DESC) AS rn
+    FROM PUBLIC.PROVIDERXPRIMARY_HUBXDATE__DAILY__FACTS e
+    LEFT JOIN PUBLIC.SMART_HUBS_VIEW s ON e.primary_hub_id = s.hub_id
+    QUALIFY rn = 1
+)
+
+SELECT 
+    ch.primary_hub_id,
+    ch.hub_name,
+    COUNT(DISTINCT b.provider_id) AS total_providers,
+    AVG(b.RATING) AS avg_rating,
+    MIN(b.RATING) AS min_rating,
+    MAX(b.RATING) AS max_rating,
+    COUNT(b.RATING) AS rating_count
+FROM base b
+INNER JOIN current_hub ch ON b.provider_id = ch.provider_id
+WHERE LOWER(b.city) = 'bangalore'
+GROUP BY ch.primary_hub_id, ch.hub_name
+ORDER BY avg_rating DESC;
