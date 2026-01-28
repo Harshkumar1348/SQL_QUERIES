@@ -13,8 +13,6 @@ WITH l7d_for_net_churn AS (
     WHERE pdf.approval_date >= '2024-04-01'
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
-      -- Removed: AND DATE_TRUNC('week', pdf.approval_date) <> DATE_TRUNC('week', pdf.last_delivery_date)
-      -- Removed explicit IS NOT NULL as date filter covers it, but keeping it won't hurt.
       AND pdf.approval_date IS NOT NULL
     GROUP BY 1
 ),
@@ -323,8 +321,8 @@ windowed_metrics AS (
         apc_raw,
         net_churn,
         gross_churn,
-        MIN(week) OVER (PARTITION BY city) as first_week,
-        FIRST_VALUE(apc_raw) OVER (PARTITION BY city ORDER BY week) as base_apc
+        -- Find the APC value for the week ending 2024-10-27 (last week of Oct) to use as base
+        MAX(CASE WHEN DATE(week) = '2024-10-28' THEN apc_raw END) OVER (PARTITION BY city) as oct_base_apc
     FROM weekly_metrics
 ),
 calc_metrics AS (
@@ -336,13 +334,13 @@ calc_metrics AS (
         apc_raw,
         net_churn,
         gross_churn,
-        first_week,
-        base_apc,
+        oct_base_apc,
+        -- Calculate cumulative change starting from Nov 2024
         COALESCE(
-            SUM(approvals - gross_churn + reactivated_providers) 
+            SUM(CASE WHEN DATE(week) > '2024-10-28' THEN approvals - gross_churn + reactivated_providers ELSE 0 END) 
             OVER (PARTITION BY city ORDER BY week ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
             0
-        ) as cumulative_change
+        ) as cumulative_change_since_nov
     FROM windowed_metrics
 )
 SELECT
@@ -351,8 +349,10 @@ SELECT
     reactivated_providers,
     approvals AS Approvals,
     CASE 
-        WHEN week = first_week THEN apc_raw
-        ELSE base_apc + cumulative_change
+        -- For weeks before Nov 2024 (i.e. <= Oct 2024), use raw APC
+        WHEN DATE(week) <= '2024-10-28' THEN apc_raw
+        -- For weeks from Nov 2024 onwards, use recursive formula based on last Oct week
+        ELSE COALESCE(oct_base_apc, apc_raw) + cumulative_change_since_nov
     END AS APC,
     net_churn,
     gross_churn
