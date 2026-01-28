@@ -292,14 +292,14 @@ master_keys AS (
 distinct_keys AS (
     SELECT DISTINCT week, city FROM master_keys WHERE week IS NOT NULL AND city IS NOT NULL
 ),
--- Combine all metrics per week/city for calculating NEXT_WEEK_APC
+-- Combine all metrics per week/city
 weekly_metrics AS (
     SELECT
         k.week,
         k.city,
         COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
         COALESCE(a.partners_approved, 0) AS approvals,
-        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc,
+        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_raw,
         COALESCE(nc.net_churn_count, 0) AS net_churn,
         COALESCE(gc.gross_churn_count, 0) AS gross_churn
     FROM distinct_keys k
@@ -314,17 +314,30 @@ weekly_metrics AS (
     LEFT JOIN gross_churn_agg gc
         ON k.week = gc.week AND k.city = gc.reporting_city
 ),
--- Final output with NEXT_WEEK_APC calculation
--- NEXT_WEEK_APC = Current week's (APC + Approvals - Gross Churn + Reactivations)
--- This predicts next week's APC based on current week's metrics
+-- Calculate APC using previous week's metrics
+-- APC = Previous Week APC + Previous Week Approvals - Previous Week Gross Churn + Previous Week Reactivations
+weekly_metrics_with_apc AS (
+    SELECT
+        week,
+        city,
+        reactivated_providers,
+        approvals,
+        apc_raw,
+        net_churn,
+        gross_churn,
+        LAG(apc_raw, 1) OVER (PARTITION BY city ORDER BY week) 
+            + LAG(approvals, 1) OVER (PARTITION BY city ORDER BY week) 
+            - LAG(gross_churn, 1) OVER (PARTITION BY city ORDER BY week) 
+            + LAG(reactivated_providers, 1) OVER (PARTITION BY city ORDER BY week) AS APC
+    FROM weekly_metrics
+)
 SELECT
     TO_CHAR(week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
     city AS "city::multi-filter",
     reactivated_providers,
     approvals AS Approvals,
-    apc AS APC,
+    APC,
     net_churn,
-    gross_churn,
-    (apc + approvals - gross_churn + reactivated_providers) AS NEXT_WEEK_APC
-FROM weekly_metrics
+    gross_churn
+FROM weekly_metrics_with_apc
 ORDER BY 1, 2;
