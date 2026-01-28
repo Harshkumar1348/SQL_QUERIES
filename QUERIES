@@ -52,6 +52,7 @@ provider_weeks AS (
       AND service_delivered = 1
       AND DATE(bdate_final) >= '2024-04-01'
 ),
+-- FIX: Only include weeks ON OR AFTER provider's approval date (prevents cross join explosion)
 provider_weeks_combined AS (
     SELECT DISTINCT
         p.provider_id,
@@ -66,7 +67,7 @@ provider_weeks_combined AS (
           AND country = 'India'
           AND reporting_city <> 'Singapore'
           AND DATE(bdate_final) >= '2024-04-01'
-    ) g ON TRUE
+    ) g ON g.week >= DATE_TRUNC('week', p.approval_date)  -- FIX: Only weeks after approval
     WHERE p.customer_category_key = 'insta_maids'
       AND p.provider_id NOT IN (
             '649809118e2b920027381c8b','6540b306f93f8f0024edae02',
@@ -75,6 +76,7 @@ provider_weeks_combined AS (
       )
       AND p.country = 'India'
       AND p.city NOT IN ('Singapore','Mysore')
+      AND p.approval_date IS NOT NULL
 ),
 min_bdate AS (
     SELECT 
@@ -90,7 +92,7 @@ provider_weekly_markings AS (
         pwc.week_start,
         COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
         CASE 
-            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) >= 4 
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) >= 4
                 THEN 'Working'
             ELSE 'Not Working'
         END AS week_mark_status
@@ -114,17 +116,18 @@ provider_weekly_markings_with_lag AS (
     FROM provider_weekly_markings
 ),
 -- Gross Churn Logic:
--- If partner was Working in week N-2 (e.g., 5th Jan)
--- And Not Working in week N-1 (e.g., 12th Jan)
--- Then count as gross churn in week N (e.g., 19th Jan)
+-- Partner was Working 2 weeks ago, Not Working last week -> Count as gross churn this week
+-- FIX: Added filter to ensure both lag values are not null (prevents counting first weeks)
 gross_churn_agg AS (
     SELECT
         week_start AS week,
         reporting_city,
         COUNT(DISTINCT provider_id) AS gross_churn_count
     FROM provider_weekly_markings_with_lag
-    WHERE lag_1_week_mark_status = 'Not Working'   -- Previous week (12th Jan) = Not Working
-      AND lag_2_week_mark_status = 'Working'       -- Week before that (5th Jan) = Working
+    WHERE lag_1_week_mark_status = 'Not Working'
+      AND lag_2_week_mark_status = 'Working'
+      AND lag_1_week_mark_status IS NOT NULL  -- FIX: Ensure lag values exist
+      AND lag_2_week_mark_status IS NOT NULL  -- FIX: Ensure lag values exist
     GROUP BY 1, 2
 ),
 weekly_churn_events AS (
@@ -256,7 +259,7 @@ pp AS (
         pro_final.city,
         pro_final.provider_id,
         DATE_TRUNC('week', updated) AS week,
-        COUNT(DISTINCT CASE WHEN tagged_hub IS NOT NULL AND DayCM >= 6 THEN updated END) AS hub_tagged_and_cm_days
+        COUNT(DISTINCT CASE WHEN tagged_hub IS NOT NULL AND DayCM >= 4 THEN updated END) AS hub_tagged_and_cm_days
     FROM pro_final
     LEFT JOIN PROVIDER__DAILY__FACTS pdf ON pdf.provider_id = pro_final.provider_id
     WHERE pro_final.provider_id IS NOT NULL
@@ -296,7 +299,7 @@ distinct_keys AS (
     FROM master_keys 
     WHERE week IS NOT NULL 
       AND city IS NOT NULL
-      AND week <= DATE_TRUNC('week', CURRENT_DATE)  -- Only current week and past weeks, NO future weeks
+      AND week <= DATE_TRUNC('week', CURRENT_DATE)  -- No future weeks
 )
 SELECT
     TO_CHAR(k.week, 'YYYY-MM-DD') AS "week::multi-filter",
@@ -317,5 +320,5 @@ LEFT JOIN net_churn_agg nc
     ON k.week = nc.week AND k.city = nc.reporting_city
 LEFT JOIN gross_churn_agg gc
     ON k.week = gc.week AND k.city = gc.reporting_city
-WHERE k.week <= DATE_TRUNC('week', CURRENT_DATE)  -- Double check: NO future weeks
+WHERE k.week <= DATE_TRUNC('week', CURRENT_DATE)
 ORDER BY 1, 2;
