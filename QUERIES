@@ -296,7 +296,7 @@ distinct_keys AS (
     FROM master_keys 
     WHERE week IS NOT NULL 
       AND city IS NOT NULL
-      AND week <= DATE_TRUNC('week', CURRENT_DATE)  -- Exclude future weeks
+      AND week <= DATE_TRUNC('week', CURRENT_DATE)  -- Only current week and past weeks, NO future weeks
 )
 SELECT
     TO_CHAR(k.week, 'YYYY-MM-DD') AS "week::multi-filter",
@@ -317,4 +317,5 @@ LEFT JOIN net_churn_agg nc
     ON k.week = nc.week AND k.city = nc.reporting_city
 LEFT JOIN gross_churn_agg gc
     ON k.week = gc.week AND k.city = gc.reporting_city
+WHERE k.week <= DATE_TRUNC('week', CURRENT_DATE)  -- Double check: NO future weeks
 ORDER BY 1, 2;
