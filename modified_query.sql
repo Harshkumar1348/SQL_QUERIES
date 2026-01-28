@@ -291,25 +291,69 @@ master_keys AS (
 ),
 distinct_keys AS (
     SELECT DISTINCT week, city FROM master_keys WHERE week IS NOT NULL AND city IS NOT NULL
+),
+weekly_metrics AS (
+    SELECT
+        k.week,
+        k.city,
+        COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
+        COALESCE(a.partners_approved, 0) AS approvals,
+        COALESCE(h.hub_tagged_cm_marked_pros, 0) AS apc_raw,
+        COALESCE(nc.net_churn_count, 0) AS net_churn,
+        COALESCE(gc.gross_churn_count, 0) AS gross_churn
+    FROM distinct_keys k
+    LEFT JOIN reactivations_agg r 
+        ON k.week = r.week_start AND k.city = r.reporting_city
+    LEFT JOIN approvals a 
+        ON k.week = a.week AND k.city = a.city
+    LEFT JOIN hub_tagged_agg h
+        ON k.week = h.week AND k.city = h.city
+    LEFT JOIN net_churn_agg nc
+        ON k.week = nc.week AND k.city = nc.reporting_city
+    LEFT JOIN gross_churn_agg gc
+        ON k.week = gc.week AND k.city = gc.reporting_city
+),
+windowed_metrics AS (
+    SELECT
+        week,
+        city,
+        reactivated_providers,
+        approvals,
+        apc_raw,
+        net_churn,
+        gross_churn,
+        MIN(week) OVER (PARTITION BY city) as first_week,
+        FIRST_VALUE(apc_raw) OVER (PARTITION BY city ORDER BY week) as base_apc
+    FROM weekly_metrics
+),
+calc_metrics AS (
+    SELECT
+        week,
+        city,
+        reactivated_providers,
+        approvals,
+        apc_raw,
+        net_churn,
+        gross_churn,
+        first_week,
+        base_apc,
+        COALESCE(
+            SUM(approvals - gross_churn + reactivated_providers) 
+            OVER (PARTITION BY city ORDER BY week ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+            0
+        ) as cumulative_change
+    FROM windowed_metrics
 )
 SELECT
-    TO_CHAR(k.week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
-    k.city AS "city::multi-filter",
-    COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
-    COALESCE(a.partners_approved, 0) AS Approvals,
-    COALESCE(h.hub_tagged_cm_marked_pros, 0) AS APC,
-    COALESCE(nc.net_churn_count, 0) AS net_churn,
-    COALESCE(gc.gross_churn_count, 0) AS gross_churn,
-    (COALESCE(h.hub_tagged_cm_marked_pros, 0) + COALESCE(a.partners_approved, 0) - COALESCE(gc.gross_churn_count, 0) + COALESCE(r.reactivated_providers, 0)) AS next_week_apc
-FROM distinct_keys k
-LEFT JOIN reactivations_agg r 
-    ON k.week = r.week_start AND k.city = r.reporting_city
-LEFT JOIN approvals a 
-    ON k.week = a.week AND k.city = a.city
-LEFT JOIN hub_tagged_agg h
-    ON k.week = h.week AND k.city = h.city
-LEFT JOIN net_churn_agg nc
-    ON k.week = nc.week AND k.city = nc.reporting_city
-LEFT JOIN gross_churn_agg gc
-    ON k.week = gc.week AND k.city = gc.reporting_city
+    TO_CHAR(week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
+    city AS "city::multi-filter",
+    reactivated_providers,
+    approvals AS Approvals,
+    CASE 
+        WHEN week = first_week THEN apc_raw
+        ELSE base_apc + cumulative_change
+    END AS APC,
+    net_churn,
+    gross_churn
+FROM calc_metrics
 ORDER BY 1, 2;
