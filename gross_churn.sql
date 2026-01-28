@@ -1,0 +1,343 @@
+WITH l7d_for_net_churn AS (
+    SELECT 
+        pdf.provider_id,
+        CASE 
+            WHEN SUM(CASE WHEN status = 'marked working' THEN 1 ELSE 0 END) > 8 THEN 'Working'
+            ELSE 'Not Working'
+        END AS L7D_status
+    FROM provider__daily__facts pdf
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+        ON pdf.provider_id = acm.provider_id
+        AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
+        AND acm.start_hour_local BETWEEN 8 AND 19
+    WHERE pdf.approval_date >= '2025-01-01'
+      AND pdf.provider_name NOT ILIKE '%test%'
+      AND pdf.reporting_supercategory_new = 'Insta Help'
+       AND DATE_TRUNC('week', pdf.approval_date)
+      <> DATE_TRUNC('week', pdf.last_delivery_date)
+    GROUP BY 1
+),
+ 
+provider_current_status_net AS (
+    SELECT
+        pdf.provider_id,
+        pdf.city AS reporting_city,
+        CASE 
+            WHEN last_delivery_date IS NULL THEN TO_CHAR(DATE_TRUNC('month', DATE(approval_date)), 'YYYY-MM-DD') 
+            ELSE TO_CHAR(DATE_TRUNC('month', DATE(last_delivery_date)), 'YYYY-MM-DD') 
+        END AS ldd_month,
+        CASE 
+            WHEN last_delivery_date IS NULL THEN DATE_TRUNC('week', DATE(approval_date))
+            ELSE DATE_TRUNC('week', DATE(last_delivery_date))
+        END AS ldd_week,
+        CASE 
+            WHEN COALESCE(l7d_for_net_churn.L7D_status, 'Unknown') = 'Not Working' THEN 'Churned'
+            WHEN COALESCE(l7d_for_net_churn.L7D_status, 'Unknown') = 'Working' THEN 'Active'
+            WHEN last_delivery_date IS NULL 
+                 AND DATE(approval_date) >= CURRENT_DATE - 7 THEN 'Active'
+        END AS pro_current_status
+    FROM provider__daily__facts pdf
+    LEFT JOIN l7d_for_net_churn ON pdf.provider_id = l7d_for_net_churn.provider_id
+    WHERE pdf.reporting_supercategory_new = 'Insta Help'
+      AND pdf.city NOT IN ('Singapore','Mysore')
+      AND approval_date IS NOT NULL
+),
+ 
+provider_weeks AS (
+    SELECT DISTINCT 
+        provider_id, 
+        DATE_TRUNC('week', DATE(bdate_final)) AS week, 
+        reporting_city
+    FROM request__daily__facts
+    WHERE customer_category_key = 'insta_maids'
+      AND country = 'India'
+      AND reporting_city <> 'Singapore'
+      AND service_delivered = 1
+      AND DATE(bdate_final) >= '2024-04-01'
+),
+ 
+provider_weeks_combined AS (
+    SELECT DISTINCT
+        p.provider_id,
+        p.city AS reporting_city,
+        DATE(p.approval_date) AS approval_date,
+        DATE_TRUNC('week', g.week) AS week_start
+    FROM provider__daily__facts p
+    JOIN (
+        SELECT DISTINCT DATE_TRUNC('week', DATE(bdate_final)) AS week
+        FROM request__daily__facts
+        WHERE customer_category_key = 'insta_maids'
+          AND country = 'India'
+          AND reporting_city <> 'Singapore'
+          AND DATE(bdate_final) >= '2024-04-01'
+    ) g ON TRUE
+    WHERE p.customer_category_key = 'insta_maids'
+      AND p.provider_id NOT IN (
+            '649809118e2b920027381c8b','6540b306f93f8f0024edae02',
+            '652e3bd7be83ab00347c41b9','65d743bb2894c80027f18563',
+            '6593d80bd91e7c00253bc68b'
+      )
+      AND p.country = 'India'
+      AND p.city NOT IN ('Singapore','Mysore')
+),
+ 
+min_bdate AS (
+    SELECT 
+        provider_id,
+        first_delivery_date AS min_bdate_final,
+        last_delivery_date AS ldd
+    FROM provider__daily__facts
+),
+ 
+provider_weekly_markings AS (
+    SELECT
+        pwc.provider_id,
+        pwc.week_start,
+        COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) AS marked_count_week,
+        CASE 
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 8 
+                THEN 'Working'
+            ELSE 'Not Working'
+        END AS week_mark_status
+    FROM provider_weeks_combined pwc
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+      ON pwc.provider_id = acm.provider_id
+      AND DATE_TRUNC('week', DATE(acm.date)) = pwc.week_start
+      AND acm.start_hour_local BETWEEN 8 AND 19
+    GROUP BY 1,2
+),
+ 
+provider_weekly_markings_with_lag AS (
+    SELECT
+        provider_id,
+        week_start,
+        marked_count_week,
+        week_mark_status,
+        LAG(week_mark_status) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag_week_mark_status,
+        LAG(week_mark_status, 2) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag2_week_mark_status,
+        LAG(week_mark_status, 3) OVER (PARTITION BY provider_id ORDER BY week_start) AS lag3_week_mark_status
+    FROM provider_weekly_markings
+),
+ 
+weekly_churn_events AS (
+    SELECT
+        provider_id,
+        week_start AS churn_week
+    FROM provider_weekly_markings_with_lag
+    WHERE lag_week_mark_status = 'Working'
+      AND week_mark_status = 'Not Working'
+),
+
+gross_churn_events_new AS (
+    SELECT
+        pwm.provider_id,
+        pwc.reporting_city,
+        pwm.week_start
+    FROM provider_weekly_markings_with_lag pwm
+    JOIN provider_weeks_combined pwc 
+        ON pwm.provider_id = pwc.provider_id 
+        AND pwm.week_start = pwc.week_start
+    WHERE pwm.lag_week_mark_status = 'Not Working'
+      AND pwm.lag2_week_mark_status = 'Not Working'
+      AND pwm.lag3_week_mark_status = 'Working'
+),
+
+gross_churn_agg AS (
+    SELECT
+        week_start AS week,
+        reporting_city AS city,
+        COUNT(DISTINCT provider_id) AS gross_churn_count
+    FROM gross_churn_events_new
+    GROUP BY 1, 2
+),
+ 
+weekly_base_final AS (
+    SELECT
+        pwc.reporting_city,
+        pwc.provider_id,
+        pwc.week_start,
+        m.min_bdate_final,
+        pwc.approval_date,
+        DATE(DATE_TRUNC('WEEK',pwc.approval_date)) as app_week,
+        CASE
+            WHEN pw.week IS NOT NULL THEN 1
+            WHEN pwc.week_start <= DATE_TRUNC('week', approval_date) 
+                 AND m.ldd >= approval_date THEN 1
+            ELSE 0
+        END AS working_status,
+        pcs.pro_current_status,
+        LAG(
+            CASE
+                WHEN pw.week IS NOT NULL THEN 1
+                WHEN pwc.week_start <= DATE_TRUNC('week', approval_date) 
+                     AND m.ldd >= approval_date THEN 1
+                ELSE 0
+            END
+        ) OVER (PARTITION BY pwc.provider_id ORDER BY pwc.week_start) AS lag_status,
+        pwm.week_mark_status,
+        pwm.lag_week_mark_status
+    FROM provider_weeks_combined pwc
+    LEFT JOIN provider_weeks pw 
+        ON pw.provider_id = pwc.provider_id 
+       AND pw.week = pwc.week_start
+    LEFT JOIN min_bdate m 
+        ON m.provider_id = pwc.provider_id
+    LEFT JOIN provider_current_status_net pcs 
+        ON pcs.provider_id = pwc.provider_id
+    LEFT JOIN provider_weekly_markings_with_lag pwm
+        ON pwm.provider_id = pwc.provider_id 
+       AND pwm.week_start = pwc.week_start
+    WHERE pwc.approval_date IS NOT NULL
+),
+ 
+reactivation_candidates AS (
+    SELECT * 
+    FROM weekly_base_final
+    WHERE week_mark_status = 'Working'
+      AND lag_week_mark_status = 'Not Working'
+      AND working_status = 1
+      AND pro_current_status = 'Active'
+),
+ 
+reactivation_details_with_churn AS (
+    SELECT
+        rc.reporting_city,
+        rc.provider_id,
+        rc.week_start,
+        rc.app_week,
+        (SELECT MAX(ce.churn_week) 
+         FROM weekly_churn_events ce 
+         WHERE ce.provider_id = rc.provider_id 
+           AND ce.churn_week < rc.week_start) AS last_churn_week
+    FROM reactivation_candidates rc
+),
+ 
+reactivations_agg AS (
+    SELECT
+        week_start,
+        reporting_city,
+        COUNT(DISTINCT provider_id) AS reactivated_providers
+    FROM reactivation_details_with_churn
+    WHERE last_churn_week IS NOT NULL
+    GROUP BY 1, 2
+),
+ 
+approvals AS (
+    SELECT 
+        city AS city,
+        DATE_TRUNC('week', DATE(approval_date)) AS week,
+        COUNT(DISTINCT provider_id) AS partners_approved
+    FROM PROVIDER__DAILY__FACTS
+    WHERE CUSTOMER_CATEGORY_KEY = 'insta_maids'
+        AND country = 'India'
+        AND city IN ('Mumbai','Bangalore','Hyderabad','Delhi NCR','Pune','Chennai','Kolkata','Ahmedabad')
+        AND DATE(approval_date) >= '2025-01-01'
+    GROUP BY 1, 2
+),
+ 
+hub_tagged_base as (
+    select 
+        aa.provider_id,
+        date(aa.updated_at) as updated,
+        left(hub_name, CHARINDEX('_city', hub_name) - 1) as tagged_hub
+    from PROVIDERXPRIMARY_HUBXDATE__DAILY__FACTS aa
+    left join PUBLIC.SMART_HUBS_VIEW on SMART_HUBS_VIEW.hub_id = aa.primary_hub_id
+    left join PROVIDER__DAILY__FACTS pdf on pdf.provider_id=aa.provider_id
+    where pdf.CUSTOMER_CATEGORY_KEY = 'insta_maids'
+    and date(aa.updated_at) >= '2024-04-01' -- Aligned with provider_weeks start
+),
+ 
+apc_CM as (
+    select 
+        city,
+        p.provider_id,
+        date(date) as start_time_ist,
+        count(distinct case when status in ('marked working') then START_HOUR_LOCAL end) as DayCM
+    from PROVIDER__DAILY__FACTS p
+    left join PROVIDERXDATEXHOUR__CALENDAR_MARKING__HOURLY__FACTS cs 
+        on cs.provider_id = p.provider_id 
+        and status in ('marked working') 
+        and date >= '2024-04-01' -- Aligned with provider_weeks start
+        and START_HOUR_LOCAL between 8 and 18
+    where p.CUSTOMER_CATEGORY_KEY = 'insta_maids'
+    group by 1,2,3
+),
+ 
+pro_final as (
+    select
+        apc_CM.city,
+        hub_tagged_base.provider_id,
+        updated,
+        DayCM,
+        tagged_hub
+    from apc_CM
+    left join hub_tagged_base on apc_CM.provider_id=hub_tagged_base.provider_id and updated=apc_CM.start_time_ist
+),
+ 
+pp as (
+    select
+        pro_final.city,
+        pro_final.provider_id,
+        date_trunc('week', updated) as week,
+        count(distinct case when tagged_hub is not null and DayCM>=6 then updated end) as hub_tagged_and_cm_days
+    from pro_final
+    left join PROVIDER__DAILY__FACTS pdf on pdf.provider_id = pro_final.provider_id
+    where pro_final.provider_id is not null
+    and approval_date is not null
+    group by 1,2,3
+),
+ 
+hub_tagged_agg as (
+    select
+        city,
+        week,
+        count ( distinct case when hub_tagged_and_cm_days>=1 then provider_id end ) as hub_tagged_cm_marked_pros
+    from pp
+    group by 1,2
+),
+ 
+net_churn_agg AS (
+    SELECT
+        reporting_city,
+        ldd_week AS week,
+        COUNT(DISTINCT provider_id) AS net_churn_count
+    FROM provider_current_status_net
+    WHERE pro_current_status = 'Churned'
+    GROUP BY 1, 2
+),
+ 
+master_keys AS (
+    SELECT week_start AS week, reporting_city AS city FROM reactivations_agg
+    UNION
+    SELECT week, city FROM approvals
+    UNION
+    SELECT week, city FROM hub_tagged_agg
+    UNION
+    SELECT week, reporting_city AS city FROM net_churn_agg
+    UNION
+    SELECT week, city FROM gross_churn_agg
+),
+ 
+distinct_keys AS (
+    SELECT DISTINCT week, city FROM master_keys WHERE week IS NOT NULL AND city IS NOT NULL
+)
+ 
+SELECT
+    TO_CHAR(k.week, 'YYYY-MM-DD') AS "reactivation_week::multi-filter",
+    k.city AS "city::multi-filter",
+    COALESCE(r.reactivated_providers, 0) AS reactivated_providers,
+    COALESCE(a.partners_approved, 0) AS Approvals,
+    COALESCE(h.hub_tagged_cm_marked_pros, 0) AS APC,
+    COALESCE(gc.gross_churn_count, 0) AS gross_churn
+FROM distinct_keys k
+LEFT JOIN reactivations_agg r 
+    ON k.week = r.week_start AND k.city = r.reporting_city
+LEFT JOIN approvals a 
+    ON k.week = a.week AND k.city = a.city
+LEFT JOIN hub_tagged_agg h
+    ON k.week = h.week AND k.city = h.city
+LEFT JOIN net_churn_agg nc
+    ON k.week = nc.week AND k.city = nc.reporting_city
+LEFT JOIN gross_churn_agg gc
+    ON k.week = gc.week AND k.city = gc.city
+ORDER BY 1, 2;
