@@ -4,12 +4,17 @@ function syncHandholdingData() {
   const dumpSheet = ss.getSheetByName("Data Dump");
 
   // Now pulling 21 columns (B to V) from Query Output
-  const queryData = querySheet
-    .getRange(3, 2, querySheet.getLastRow() - 2, 21)
-    .getValues(); // B3:V
-  const dumpData = dumpSheet
-    .getRange(3, 2, dumpSheet.getLastRow() - 2, 23)
-    .getValues(); // B3:X
+  const queryRowCount = Math.max(0, querySheet.getLastRow() - 2);
+  const dumpRowCount = Math.max(0, dumpSheet.getLastRow() - 2);
+
+  const queryData =
+    queryRowCount > 0
+      ? querySheet.getRange(3, 2, queryRowCount, 21).getValues() // B3:V
+      : [];
+  const dumpData =
+    dumpRowCount > 0
+      ? dumpSheet.getRange(3, 2, dumpRowCount, 23).getValues() // B3:X
+      : [];
 
   const formatDate = (d) => {
     const parsed = new Date(d);
