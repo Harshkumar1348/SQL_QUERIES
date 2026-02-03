@@ -50,17 +50,17 @@ function syncHandholdingData() {
     }
 
     if (dumpKeyMap.has(key)) {
-      // Existing row – update 7 fields now (col 15–21 from queryRow to dumpRow)
+      // Existing row – update late show + status fields
       const rowIndex = dumpKeyMap.get(key);
       const existingRow = dumpData[rowIndex];
 
-      existingRow[14] = queryRow[14]; // Rating Errors (P)
-      existingRow[15] = queryRow[15]; // PAF Errors (Q)
-      existingRow[16] = queryRow[16]; // Leaves (R)
-      existingRow[17] = queryRow[17]; // Week Status (S)
-      existingRow[18] = queryRow[18]; // New Col 1 (T)
-      existingRow[19] = queryRow[19]; // New Col 2 (U)
-      existingRow[20] = queryRow[20]; // Late Show (V)
+      existingRow[11] = queryRow[11]; // Late Show Count (M)
+      existingRow[15] = queryRow[15]; // Rating Errors (Q)
+      existingRow[16] = queryRow[16]; // PAF Count (R)
+      existingRow[17] = queryRow[17]; // Leaves (S)
+      existingRow[18] = queryRow[18]; // Partner Week Status (T)
+      existingRow[19] = queryRow[19]; // Bad Rated Jobs (U)
+      existingRow[20] = queryRow[20]; // PAF Request IDs (V)
 
       dumpSheet.getRange(rowIndex + 3, 2, 1, 23).setValues([existingRow]);
       Logger.log(`✅ Updated row ${rowIndex + 3} for ${providerId} | ${perfWeek}`);
