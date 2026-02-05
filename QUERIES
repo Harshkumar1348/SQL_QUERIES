@@ -1,1 +1,225 @@
-SQL_PRACtICE
+-- Query to find partners with 2 or more consecutive leave days
+-- Using gaps-and-islands technique to identify consecutive absence patterns
+
+WITH approved_partners AS (
+  SELECT DISTINCT provider_id
+  FROM provider__daily__facts
+  WHERE customer_category_key = 'insta_maids'
+    AND approval_date <= CURRENT_DATE
+    AND country = 'India'
+),
+
+base AS (
+    SELECT DISTINCT 
+        b.provider_id,
+        b.provider_name,
+        b.city,
+        DATE(b.approval_Date) AS ad,
+        DATEDIFF(day, DATE(b.approval_Date), CURRENT_DATE) AS age_days
+    FROM provider_master b
+    INNER JOIN approved_partners ap ON b.provider_id = ap.provider_id
+    WHERE b.customer_category_key = 'insta_maids' 
+      AND b.approval_Date IS NOT NULL
+      AND b.city = 'Bangalore'
+      AND b.provider_name NOT LIKE '%Test%'
+),
+
+hubs AS (
+    SELECT * 
+    FROM PROVIDERXPRIMARY_HUBXDATE__DAILY__FACTS
+    WHERE provider_id IN (SELECT DISTINCT provider_id FROM base)
+      AND updated_at = CURRENT_DATE
+),
+
+temp_block AS (
+    SELECT DISTINCT
+        p.provider_id,
+        p.temporary_block,
+        COALESCE(t.value:reason::STRING, 'None') AS temp_block_reason,
+        TRY_TO_TIMESTAMP(REGEXP_SUBSTR(COALESCE(t.value:created_at::STRING, '0'), '[0-9]+')) AS temp_block_date
+    FROM public.provider_master p,
+         LATERAL FLATTEN(input => TRY_PARSE_JSON(p.temporary_block_reasons)) AS t
+    WHERE p.provider_id IN (SELECT provider_id FROM base)
+      AND t.value IS NOT NULL
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY p.provider_id 
+        ORDER BY temp_block_date DESC NULLS LAST
+    ) = 1
+),
+
+-- Generate all dates in the last 7 days for each provider
+date_spine AS (
+    SELECT 
+        b.provider_id,
+        DATEADD(day, seq.seq, CURRENT_DATE - 7) AS check_date
+    FROM base b
+    CROSS JOIN (
+        SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1 AS seq 
+        FROM TABLE(GENERATOR(ROWCOUNT => 8))  -- 8 days: D-7 to D0
+    ) seq
+),
+
+-- Get actual attendance (present days)
+attendance_raw AS (
+    SELECT DISTINCT
+        p.provider_id,
+        DATE(p.date) AS present_date
+    FROM providerxdate__active_profile__hourly__facts p
+    JOIN base b ON p.provider_id = b.provider_id
+    WHERE DATE(p.date) BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE
+      AND UPPER(p.ischeckedin::text) IN ('1','TRUE','YES')
+),
+
+-- Mark each date as present or absent
+daily_status AS (
+    SELECT 
+        ds.provider_id,
+        ds.check_date,
+        CASE WHEN ar.present_date IS NOT NULL THEN 1 ELSE 0 END AS is_present
+    FROM date_spine ds
+    LEFT JOIN attendance_raw ar 
+        ON ds.provider_id = ar.provider_id 
+        AND ds.check_date = ar.present_date
+),
+
+-- Identify consecutive absent days using gaps-and-islands technique
+-- Subtract row_number from date to create groups of consecutive dates
+absent_islands AS (
+    SELECT 
+        provider_id,
+        check_date,
+        check_date - ROW_NUMBER() OVER (
+            PARTITION BY provider_id 
+            ORDER BY check_date
+        ) AS island_group
+    FROM daily_status
+    WHERE is_present = 0  -- Only absent days
+),
+
+-- Count consecutive absent days per island
+consecutive_leave_counts AS (
+    SELECT 
+        provider_id,
+        island_group,
+        COUNT(*) AS consecutive_leave_days,
+        MIN(check_date) AS leave_start_date,
+        MAX(check_date) AS leave_end_date
+    FROM absent_islands
+    GROUP BY provider_id, island_group
+    HAVING COUNT(*) >= 2  -- Filter: 2 or more consecutive leave days
+),
+
+-- Get providers with consecutive leave (2+ days)
+providers_with_consecutive_leave AS (
+    SELECT DISTINCT 
+        provider_id,
+        MAX(consecutive_leave_days) AS max_consecutive_leave,
+        MIN(leave_start_date) AS first_leave_start,
+        MAX(leave_end_date) AS last_leave_end
+    FROM consecutive_leave_counts
+    GROUP BY provider_id
+),
+
+provider_attendance AS (
+    SELECT 
+        p.provider_id,
+        COUNT(DISTINCT DATE(p.date)) AS L7_WD,
+        MAX(CASE WHEN DATE(p.date) = CURRENT_DATE - 7 THEN 1 ELSE 0 END) AS D7_present,
+        MAX(CASE WHEN DATE(p.date) = CURRENT_DATE - 1 THEN 1 ELSE 0 END) AS D1_present,
+        MAX(CASE WHEN DATE(p.date) = CURRENT_DATE - 2 THEN 1 ELSE 0 END) AS D2_present,
+        MAX(CASE WHEN DATE(p.date) = CURRENT_DATE - 3 THEN 1 ELSE 0 END) AS D3_present,
+        MAX(CASE WHEN DATE(p.date) = CURRENT_DATE THEN 1 ELSE 0 END) AS D0_present
+    FROM providerxdate__active_profile__hourly__facts p
+    JOIN base b ON p.provider_id = b.provider_id
+    WHERE DATE(p.date) BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE
+      AND UPPER(p.ischeckedin::text) IN ('1','TRUE','YES')
+    GROUP BY p.provider_id
+),
+
+cm AS (
+    SELECT DISTINCT 
+        b.provider_id,
+        CASE 
+            WHEN COALESCE(SUM(acm.marked_working), 0) >= 4 
+            THEN 'Active' 
+            ELSE 'Inactive' 
+        END AS L7_active
+    FROM base b 
+    LEFT JOIN (
+        SELECT 
+            PROVIDER_ID, 
+            DATE(date) AS date,
+            COUNT(CASE WHEN status = 'marked working' THEN 1 END) AS marked_working 
+        FROM PUBLIC.providerXdateXhour__calendar_marking__hourly__facts 
+        WHERE DATE(date) BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE - 1
+          AND START_HOUR_LOCAL BETWEEN 7 AND 19
+        GROUP BY PROVIDER_ID, DATE(date)
+    ) acm ON acm.provider_id = b.provider_id
+    GROUP BY b.provider_id
+),
+
+seven_am_partners AS (
+    SELECT DISTINCT provider_id
+    FROM PUBLIC.providerXdateXhour__calendar_marking__hourly__facts
+    WHERE status = 'marked working'
+      AND start_hour_local = 7
+      AND DATE(date) BETWEEN CURRENT_DATE - 1 AND CURRENT_DATE
+),
+
+daily_hours_next7 AS (
+    SELECT
+        provider_id,
+        DATE(date) AS work_date,
+        COUNT(CASE WHEN status = 'marked working' THEN 1 END) AS daily_working_hours
+    FROM PUBLIC.providerXdateXhour__calendar_marking__hourly__facts
+    WHERE DATE(date) BETWEEN CURRENT_DATE + 1 AND CURRENT_DATE + 7
+      AND start_hour_local BETWEEN 7 AND 19
+    GROUP BY provider_id, DATE(date)
+),
+
+provider_type AS (
+    SELECT
+        provider_id,
+        MAX(CASE WHEN daily_working_hours > 4 AND daily_working_hours < 7 THEN 1 ELSE 0 END) AS is_part_time_flag
+    FROM daily_hours_next7
+    GROUP BY provider_id
+)
+
+SELECT DISTINCT
+    b.provider_id AS "PROVIDER_ID",
+    b.provider_name AS "PROVIDER_NAME",
+    b.age_days AS "AGE DAYS",
+    COALESCE(tb.temporary_block, 'No') AS "TEMP BLOCK",
+    CASE WHEN tb.temp_block_date IS NOT NULL THEN TO_CHAR(tb.temp_block_date, 'MM/DD/YY') ELSE NULL END AS "TEMP BLOCK DATE", 
+    tb.temp_block_reason AS "TEMP BLOCK REASON",
+    TRIM(REPLACE(REPLACE(REPLACE(sh.HUB_NAME, CHR(10), ''), CHR(13), ''), ' ', '')) AS "HUB_NAME",
+    COALESCE(pa.L7_WD, 0) AS "L7 WD",
+    COALESCE(pa.D7_present, 0) AS "D-7 present",
+    COALESCE(pa.D1_present, 0) AS "D-1 present",
+    COALESCE(pa.D2_present, 0) AS "D-2 present",
+    COALESCE(pa.D3_present, 0) AS "D-3 present",
+    COALESCE(pa.D0_present, 0) AS "D0 present",
+    pcl.max_consecutive_leave AS "MAX_CONSECUTIVE_LEAVE_DAYS",
+    TO_CHAR(pcl.first_leave_start, 'MM/DD/YY') AS "CONSECUTIVE_LEAVE_START",
+    TO_CHAR(pcl.last_leave_end, 'MM/DD/YY') AS "CONSECUTIVE_LEAVE_END",
+    cm.L7_active AS "L7 active",
+    CASE 
+        WHEN sap.provider_id IS NOT NULL AND COALESCE(pt.is_part_time_flag, 0) = 1 THEN '7AM PT'
+        WHEN sap.provider_id IS NOT NULL THEN '7AM FT'
+        WHEN COALESCE(pt.is_part_time_flag, 0) = 1 THEN '8AM PT'
+        ELSE '8AM FT'
+    END AS "TYPE"
+FROM base b
+-- INNER JOIN to filter only providers with consecutive leave
+INNER JOIN providers_with_consecutive_leave pcl ON pcl.provider_id = b.provider_id
+LEFT JOIN hubs h ON b.provider_id = h.provider_id
+LEFT JOIN smart_hubs_view sh ON sh.HUB_ID = h.primary_hub_id
+LEFT JOIN provider_attendance pa ON pa.provider_id = b.provider_id
+LEFT JOIN cm ON cm.provider_id = b.provider_id
+LEFT JOIN seven_am_partners sap ON sap.provider_id = b.provider_id
+LEFT JOIN provider_type pt ON pt.provider_id = b.provider_id
+LEFT JOIN temp_block tb ON tb.provider_id = b.provider_id
+WHERE cm.L7_active = 'Active'
+  AND b.age_days != 0
+  AND TRIM(REPLACE(REPLACE(REPLACE(sh.HUB_NAME, CHR(10), ''), CHR(13), ''), ' ', '')) LIKE '%insta_maids%'
+ORDER BY pcl.max_consecutive_leave DESC, b.provider_id;
