@@ -286,7 +286,7 @@ count(distinct case when f.approval_week = w.week_val then provider_id end ) as 
 --(it / NULLIF(ts, 0)) * 100 AS ts_it,
 (tp / NULLIF(it, 0)) * 100 AS it_tp,
 (app / NULLIF(tp, 0)) * 100 AS tp_app,
-COALESCE(MAX(churn_counts.d0_churn_count), 0) as d0_churn_count,
+COALESCE(MAX(churn_counts.d0_churn_count), 0) as do_churn_count,
 COALESCE(MAX(churn_counts.d7_churn_count), 0) as d7_churn_count
 --(it / NULLIF(pr, 0)) * 100 AS pr_it,
 --(tp / NULLIF(pr, 0)) * 100 AS pr_tp,
@@ -337,7 +337,7 @@ count(distinct case when approval_week = w.week_val then provider_id end ) as ap
 --(it / NULLIF(ts, 0)) * 100 AS ts_it,
 (tp / NULLIF(it, 0)) * 100 AS it_tp,
 (app / NULLIF(tp, 0)) * 100 AS tp_app,
-COALESCE(MAX(overall_churn_counts.d0_churn_count), 0) as d0_churn_count,
+COALESCE(MAX(overall_churn_counts.d0_churn_count), 0) as do_churn_count,
 COALESCE(MAX(overall_churn_counts.d7_churn_count), 0) as d7_churn_count
 --(it / NULLIF(pr, 0)) * 100 AS pr_it,
 --(tp / NULLIF(pr, 0)) * 100 AS pr_tp,
