@@ -58,8 +58,8 @@ l15d_metrics AS (
 
 cancellation_data AS (
     SELECT
+        ds.week_start,
         rhf.reporting_city AS city,
-        DATE_TRUNC('week', rhf.bdate_final) AS week_start_date,
         COUNT(DISTINCT rhf.customer_request_id) AS cancellation_count,
         COUNT(DISTINCT CASE 
             WHEN LOWER(COALESCE(rhf.reason, '')) IN (
@@ -99,12 +99,14 @@ cancellation_data AS (
             ) THEN rhf.customer_request_id
             ELSE NULL
         END) AS cancellation_caf
-    FROM PUBLIC.REQUEST__HOURLY__FACTS rhf
-    WHERE DATE_TRUNC('week', rhf.bdate_final) BETWEEN DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '8 weeks' AND DATE_TRUNC('week', CURRENT_DATE)
+    FROM date_spine ds
+    CROSS JOIN PUBLIC.REQUEST__HOURLY__FACTS rhf
+    WHERE rhf.reporting_supercategory_new = 'Insta Help'
+      AND rhf.country = 'India'
       AND rhf.net_status = 'cancelled'
-      AND rhf.customer_category_key = 'insta_maids'
-      AND LOWER(TRIM(rhf.reporting_city)) IN ('mumbai', 'bangalore', 'delhi ncr', 'hyderabad', 'pune')
-    GROUP BY rhf.reporting_city, DATE_TRUNC('week', rhf.bdate_final)
+      AND rhf.bdate_final >= DATEADD(day, -15, ds.week_start)
+      AND rhf.bdate_final < ds.week_start
+    GROUP BY 1, 2
 ),
 
 provider_summary AS (
@@ -142,7 +144,7 @@ LEFT JOIN provider_summary p
     ON l.week_start = p.week_start
     AND l.city = p.city
 LEFT JOIN cancellation_data cd 
-    ON l.week_start = cd.week_start_date
+    ON l.week_start = cd.week_start
     AND l.city = cd.city
 
 UNION ALL
@@ -167,7 +169,7 @@ LEFT JOIN provider_summary p
     ON l.week_start = p.week_start
     AND l.city = p.city
 LEFT JOIN cancellation_data cd 
-    ON l.week_start = cd.week_start_date
+    ON l.week_start = cd.week_start
     AND l.city = cd.city
 GROUP BY 2
 
