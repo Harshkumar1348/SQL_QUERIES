@@ -5,6 +5,7 @@ WITH date_spine AS (
     WHERE r.reporting_supercategory_new = 'Insta Help'
       AND r.bdate_final >= '2025-08-01'  
       AND r.country = 'India'
+      AND r.hour_local = 0  -- Take only one hour to avoid duplicates
 ),
 
 provider_ratings AS (
@@ -21,6 +22,7 @@ provider_ratings AS (
       AND r.responded_pro_booking IS NOT NULL
       AND r.service_delivered = 'true'
       AND r.bdate_final >= '2025-08-01'
+      AND r.hour_local = 0  -- Take only one hour to avoid duplicates
     GROUP BY 1, 2, 3
 ),
 
@@ -28,9 +30,9 @@ l15d_metrics AS (
     SELECT 
         ds.week_start,
         r.reporting_city AS city,
-        COUNT(CASE WHEN (r.gross_status = 'gross_request' OR r.gross_status = 'got_transferred') 
+        COUNT(DISTINCT CASE WHEN (r.gross_status = 'gross_request') 
                    THEN r.customer_request_id END) AS GRs,
-        COUNT(CASE WHEN ((r.gross_status = 'gross_request' OR r.gross_status = 'got_transferred') 
+        COUNT(DISTINCT CASE WHEN ((r.gross_status = 'gross_request') 
                          AND r.service_delivered = 'true') 
                    THEN r.customer_request_id END) AS SD,
         SUM(CASE 
@@ -48,11 +50,12 @@ l15d_metrics AS (
             WHEN r.service_rating IS NOT NULL AND r.service_delivered = 'true' THEN 1 
         END) AS d_nps_responses
     FROM date_spine ds
-    CROSS JOIN PUBLIC.REQUEST__HOURLY__FACTS r
-    WHERE r.reporting_supercategory_new = 'Insta Help'
-      AND r.country = 'India'
-      AND r.bdate_final >= DATEADD(day, -15, ds.week_start)
-      AND r.bdate_final < ds.week_start
+    INNER JOIN PUBLIC.REQUEST__HOURLY__FACTS r
+        ON r.reporting_supercategory_new = 'Insta Help'
+        AND r.country = 'India'
+        AND r.bdate_final >= DATEADD(day, -15, ds.week_start)
+        AND r.bdate_final < ds.week_start
+        AND r.hour_local = 0  -- Take only one hour to avoid duplicates
     GROUP BY 1, 2
 ),
 
@@ -100,12 +103,13 @@ cancellation_data AS (
             ELSE NULL
         END) AS cancellation_caf
     FROM date_spine ds
-    CROSS JOIN PUBLIC.REQUEST__HOURLY__FACTS rhf
-    WHERE rhf.reporting_supercategory_new = 'Insta Help'
-      AND rhf.country = 'India'
-      AND rhf.net_status = 'cancelled'
-      AND rhf.bdate_final >= DATEADD(day, -15, ds.week_start)
-      AND rhf.bdate_final < ds.week_start
+    INNER JOIN PUBLIC.REQUEST__HOURLY__FACTS rhf
+        ON rhf.reporting_supercategory_new = 'Insta Help'
+        AND rhf.country = 'India'
+        AND rhf.net_status = 'cancelled'
+        AND rhf.bdate_final >= DATEADD(day, -15, ds.week_start)
+        AND rhf.bdate_final < ds.week_start
+        AND rhf.hour_local = 0  -- Take only one hour to avoid duplicates
     GROUP BY 1, 2
 ),
 
