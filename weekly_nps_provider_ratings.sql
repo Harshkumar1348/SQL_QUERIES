@@ -3,7 +3,8 @@ WITH date_spine AS (
         DATE_TRUNC('week', r.bdate_final) AS week_start
     FROM PUBLIC.REQUEST__HOURLY__FACTS r
     WHERE r.reporting_supercategory_new = 'Insta Help'
-      AND r.bdate_final >= '2025-08-01'  
+      AND r.bdate_final >= '2025-02-01'  
+      AND r.bdate_final < CURRENT_DATE
       AND r.country = 'India'
       AND r.hour_local = 0  -- Take only one hour to avoid duplicates
 ),
@@ -21,7 +22,8 @@ provider_ratings AS (
       AND r.country = 'India'
       AND r.responded_pro_booking IS NOT NULL
       AND r.service_delivered = 'true'
-      AND r.bdate_final >= '2025-08-01'
+      AND r.bdate_final >= '2025-02-01'
+      AND r.bdate_final < CURRENT_DATE
       AND r.hour_local = 0  -- Take only one hour to avoid duplicates
     GROUP BY 1, 2, 3
 ),
@@ -150,6 +152,7 @@ LEFT JOIN provider_summary p
 LEFT JOIN cancellation_data cd 
     ON l.week_start = cd.week_start
     AND l.city = cd.city
+WHERE l.week_start <= DATEADD(day, -15, CURRENT_DATE)  -- Only show weeks with complete 15-day lookback
 
 UNION ALL
 
@@ -175,6 +178,7 @@ LEFT JOIN provider_summary p
 LEFT JOIN cancellation_data cd 
     ON l.week_start = cd.week_start
     AND l.city = cd.city
+WHERE l.week_start <= DATEADD(day, -15, CURRENT_DATE)  -- Only show weeks with complete 15-day lookback
 GROUP BY 2
 
 ORDER BY week DESC
