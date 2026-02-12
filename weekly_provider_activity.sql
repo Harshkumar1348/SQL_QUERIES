@@ -2,7 +2,7 @@ with app_pros as
 (
 SELECT pdf.provider_id,provider_name,city,
 approval_date as app_date,
-to_char(date_trunc('week',app_date),'YYYY-WW') as app_week,
+to_char(date_trunc('week',app_date),'IYYY-IW') as app_week,
 date(last_delivery_date) as last_delivery_date,
 case when last_delivery_date<app_date then NULL else last_delivery_date end as ldd,
  sum(case when acm.date between current_date+1 and current_date+7 then acm.marked_working end) as working_hrs,
