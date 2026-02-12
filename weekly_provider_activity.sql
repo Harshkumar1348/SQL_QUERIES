@@ -2,7 +2,7 @@ with app_pros as
 (
 SELECT pdf.provider_id,provider_name,city,
 approval_date as app_date,
-to_char(date_trunc('week',app_date),'IYYY-IW') as app_week,
+to_char(date_trunc('week',app_date),'YYYY-MM-DD') as app_week,
 date(last_delivery_date) as last_delivery_date,
 case when last_delivery_date<app_date then NULL else last_delivery_date end as ldd,
  sum(case when acm.date between current_date+1 and current_date+7 then acm.marked_working end) as working_hrs,
@@ -46,7 +46,7 @@ and customer_category_key='insta_maids'
 group by all
 )
 SELECT provider_id,provider_name,app_date,app_week,
-ldd,date_trunc('week',date(ldd)) as ldw,
+ldd,to_char(date_trunc('week',date(ldd)),'YYYY-MM-DD') as ldw,
 case when act_bucket is null then '1. Active' else act_bucket end as act_bucket,
 age,
 case when age_level is null then '1. Active' else age_level end as age_level,
@@ -59,7 +59,7 @@ from app_pros
 UNION  
 
 SELECT provider_id,provider_name,app_date,app_week,
-ldd,date_trunc('week',date(ldd)) as ldw,
+ldd,to_char(date_trunc('week',date(ldd)),'YYYY-MM-DD') as ldw,
 case when act_bucket is null then '1. Active' else act_bucket end as act_bucket,
 age,
 case when age_level is null then '1. Active' else age_level end as age_level,
