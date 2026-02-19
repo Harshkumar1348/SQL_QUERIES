@@ -1,1 +1,133 @@
-SQL_PRACtICE
+-- Trainer-wise weekly churn partners (Snowflake SQL)
+-- This is the drop-in churn block you asked for: l7d + ranked + churn_bucket,
+-- aggregated by trainer and week using POC.sdate and ranked.ldd_week.
+
+WITH poc AS (
+    SELECT
+        provider_id,
+        created_by AS trainer_name,
+        DATE_TRUNC('WEEK', created_at_ist) AS sdate
+    FROM (
+        SELECT
+            provider_id,
+            created_by,
+            created_at_ist,
+            ROW_NUMBER() OVER (
+                PARTITION BY provider_id
+                ORDER BY created_at_ist DESC
+            ) AS rn
+        FROM public.provider_module_provider_response__view
+        WHERE module_type = 'screening'
+    )
+    WHERE rn = 1
+      AND created_by IS NOT NULL
+),
+
+eligible_providers AS (
+    SELECT DISTINCT
+        provider_id
+    FROM provider__daily__facts
+    WHERE approval_date >= '2025-01-01'
+      AND provider_name NOT ILIKE '%test%'
+      AND reporting_supercategory_new = 'Insta Help'
+),
+
+l7d AS (
+    SELECT
+        ep.provider_id,
+        CASE
+            WHEN COALESCE(SUM(CASE WHEN acm.status = 'marked working' THEN 1 ELSE 0 END), 0) > 8
+                THEN 'Working'
+            ELSE 'Not Working'
+        END AS l7d_status
+    FROM eligible_providers ep
+    LEFT JOIN PUBLIC.providerXdateXhour__calendar_marking__hourly__facts acm
+        ON ep.provider_id = acm.provider_id
+       AND DATE(acm.date) BETWEEN CURRENT_DATE - 6 AND CURRENT_DATE
+       AND acm.start_hour_local BETWEEN 8 AND 19
+    GROUP BY ep.provider_id
+),
+
+ranked AS (
+    SELECT
+        provider_id,
+        reason,
+        temporary_block,
+        temp_block_since_date,
+        DATE_TRUNC('WEEK', TO_DATE(temp_block_since_date)) AS ldd_week,
+        CASE
+            WHEN LOWER(COALESCE(temporary_block::STRING, 'false')) = 'true'
+             AND DATEDIFF('DAY', TO_DATE(temp_block_since_date), CURRENT_DATE) > 7
+                THEN 'churn'
+            ELSE 'active'
+        END AS status_pro,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider_id
+            ORDER BY date DESC
+        ) AS rn
+    FROM PROVIDERXDATE__ACTIVE_PROFILE__HOURLY__FACTS
+    WHERE customer_category_key = 'insta_maids'
+),
+
+latest_ranked AS (
+    SELECT
+        provider_id,
+        ldd_week,
+        status_pro
+    FROM ranked
+    WHERE rn = 1
+),
+
+churn_bucket AS (
+    SELECT
+        p.provider_id,
+        p.trainer_name,
+        p.sdate,
+        lr.ldd_week,
+        CASE
+            WHEN COALESCE(l7d.l7d_status, 'Not Working') = 'Not Working'
+              OR COALESCE(lr.status_pro, 'active') = 'churn'
+                THEN 'churn'
+            ELSE 'active'
+        END AS churn_status
+    FROM poc p
+    LEFT JOIN l7d
+        ON p.provider_id = l7d.provider_id
+    LEFT JOIN latest_ranked lr
+        ON p.provider_id = lr.provider_id
+),
+
+trainer_weekly_churn AS (
+    SELECT
+        trainer_name,
+        COALESCE(ldd_week, sdate) AS week,
+        COUNT(DISTINCT CASE WHEN churn_status = 'churn' THEN provider_id END) AS churn_partner_count
+    FROM churn_bucket
+    GROUP BY trainer_name, COALESCE(ldd_week, sdate)
+)
+
+SELECT
+    trainer_name AS trainer,
+    week,
+    churn_partner_count
+FROM trainer_weekly_churn
+ORDER BY week DESC, trainer;
+
+
+-- ======================================================
+-- If you want this count inside Query A final output:
+--
+-- WITH query_a AS (
+--     /* Your existing Query A final SELECT that returns:
+--        trainer, week, hh_eligible, sp_pct, sp_tp_pct, tp_pct, elc_pip_pct */
+-- ),
+-- trainer_weekly_churn AS (
+--     /* keep the churn CTE block above */
+-- )
+-- SELECT
+--     q.*,
+--     COALESCE(c.churn_partner_count, 0) AS churn_partner_count
+-- FROM query_a q
+-- LEFT JOIN trainer_weekly_churn c
+--   ON q.trainer = c.trainer_name
+--  AND q.week = c.week;
