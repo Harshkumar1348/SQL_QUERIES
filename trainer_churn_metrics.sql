@@ -157,8 +157,8 @@ final_pip_metrics AS (
 )
 
 SELECT
-    COALESCE(pt.created_by, post.raw_trainer) AS trainer,
-    COALESCE(pt.sdate, post.tweek) AS week,
+    pt.created_by AS trainer,
+    pt.sdate AS week,
     post.Total_partner,
     pt.sp_pct,
     pt.sp_tp_pct,
@@ -408,21 +408,24 @@ final AS (
 ),
 
 trainer_mapping AS (
-    SELECT DISTINCT
-        a.provider_id,
-        f.value:"questionnaire_created_by"::string AS trainer_name,
-        f.value:"questionnaire_key"::string AS questionnaire_key,
-        f.value:"questionnaire_status"::string AS questionnaire_status,
-        a.updated_at_ist
-    FROM providerxcoursexchapterxassessment__provider_training__daily__facts a,
-         LATERAL FLATTEN(input => questionnaire_info) f
-    WHERE customer_category_key = 'insta_maids'
-      AND questionnaire_key = 'IH_FA_Module'
-      AND questionnaire_status = 'completed'
-    QUALIFY RANK() OVER (
-        PARTITION BY a.provider_id
-        ORDER BY a.updated_at_ist DESC
-    ) = 1
+    SELECT
+        provider_id,
+        created_by AS trainer_name,
+        DATE_TRUNC('week', created_at_ist) AS sdate
+    FROM (
+        SELECT
+            provider_id,
+            created_by,
+            created_at_ist,
+            ROW_NUMBER() OVER (
+                PARTITION BY provider_id
+                ORDER BY created_at_ist DESC
+            ) AS rn
+        FROM public.provider_module_provider_response__view
+        WHERE module_type = 'screening'
+    )
+    WHERE rn = 1
+      AND created_by IS NOT NULL
 ),
 
 lst AS (
@@ -494,122 +497,15 @@ SELECT
     trainer_name,
     perf_week,
     SUM(total_deliveries) AS Util,
-    SUM(total_rating_sum) / NULLIF(SUM(total_rated_jobs), 0) AS avg_rating,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' THEN provider_id END) AS hh_eligible,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND churn_status = 'churn' THEN provider_id END) AS churn_pros,
-    SUM(CASE WHEN life_cycle = 'ELC' THEN f10_sum_weekly_rating END)
-        / NULLIF(SUM(CASE WHEN life_cycle = 'ELC' THEN f10_sum_weekly_rated_jobs END), 0) AS F10_rating,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'LLC' THEN provider_id END) AS total_old,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'No Error' THEN provider_id END) AS no_error,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Good' THEN provider_id END) AS good,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Average' THEN provider_id END) AS average,
-    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Bad' THEN provider_id END) AS bad,
-    (
-        COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Bad' THEN provider_id END)
-      + COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Average' THEN provider_id END)
-    ) * 100.0
-    / NULLIF(COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' THEN provider_id END), 0)
-    AS bad_average_perc,
-    100
-    - (
-        COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' AND week_perf = 'Bad' THEN provider_id END)
-        * 100.0
-        / NULLIF(COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' THEN provider_id END), 0)
-      )
-    AS ideal_partner_perc,
-    SUM(CASE WHEN life_cycle = 'ELC' THEN paf_count END) * 100.0
-    / NULLIF(SUM(CASE WHEN life_cycle = 'ELC' THEN total_requests END), 0)
-    AS paf_perc,
-    SUM(CASE WHEN life_cycle = 'ELC' THEN total_graded_leaves END)
-    / NULLIF(COUNT(CASE WHEN life_cycle = 'ELC' THEN provider_id END), 0)
-    AS leaves_per_pro,
-    SUM(CASE WHEN life_cycle = 'ELC' THEN total_rating_sum END)
-    / NULLIF(SUM(CASE WHEN life_cycle = 'ELC' THEN total_rated_jobs END), 0)
-    AS hh_pros_avg_rating
+    COUNT(DISTINCT CASE WHEN life_cycle = 'ELC' THEN provider_id END) AS hh_eligible
 FROM cumulative
 GROUP BY trainer_name, perf_week
 ORDER BY trainer_name, perf_week
 )
 ,
 
-combined AS (
-    SELECT DISTINCT
-        COALESCE(v.trainer, v1.trainer_name) AS trainer,
-        COALESCE(v.week, v1.perf_week) AS week,
-        v1.hh_eligible,
-        v1.avg_rating,
-        v.sp_pct,
-        v.sp_tp_pct,
-        v.tp_pct,
-        v.elc_pip_pct,
-        v1.hh_pros_avg_rating,
-        ROUND(
-            (0.1  * COALESCE(v.sp_pct, 0)) +
-            (0.15 * COALESCE(v.sp_tp_pct, 0)) +
-            (0.15 * COALESCE(v.tp_pct, 0)) +
-            COALESCE((0.6 * (100 - v.elc_pip_pct)), 0),
-            2
-        ) AS score
-    FROM view1 v
-    FULL OUTER JOIN view2 v1
-        ON v.trainer = v1.trainer_name
-       AND v.week    = v1.perf_week
-)
-,
-
-POCO AS (
-    SELECT
-        provider_id,
-        created_by,
-        created_at_ist,
-        DATE_TRUNC('week', created_at_ist) AS sdate
-    FROM (
-        SELECT
-            provider_id,
-            created_by,
-            created_at_ist,
-            ROW_NUMBER() OVER (
-                PARTITION BY provider_id
-                ORDER BY created_at_ist DESC
-            ) AS rn
-        FROM public.provider_module_provider_response__view
-        WHERE module_type = 'screening'
-    )
-    WHERE rn = 1
-      AND created_by IS NOT NULL
-)
-,
-
-tm_age AS (
-    SELECT
-        created_by,
-        MIN(DATE(created_at_ist)) AS first_screening,
-        DATEDIFF('day', first_screening, CURRENT_DATE()) AS tmm,
-        CASE WHEN tmm > 60 THEN 'LLC Trainer' ELSE 'ELC Trainer' END AS age_tm
-    FROM POCO
-    GROUP BY 1
-)
-,
-
--- src_trainer: re-declared at outer level so churn CTEs can reference it
--- (the src inside view1 is scoped to that subquery and not visible here)
-src_trainer AS (
-    SELECT DISTINCT
-        a.provider_id,
-        f.value:"questionnaire_created_by"::string AS raw_trainer
-    FROM providerxcoursexchapterxassessment__provider_training__daily__facts a,
-         LATERAL FLATTEN(input => questionnaire_info) f
-    WHERE customer_category_key = 'insta_maids'
-      AND f.value:"questionnaire_key"::string   = 'IH_FA_Module'
-      AND f.value:"questionnaire_status"::string = 'completed'
-    QUALIFY RANK() OVER (
-        PARTITION BY a.provider_id
-        ORDER BY a.updated_at_ist DESC
-    ) = 1
-)
-,
-
-provider_base AS (
+view3 AS (
+WITH provider_base AS (
     SELECT DISTINCT
         pdf.provider_id,
         DATE(pdf.approval_date) AS app_date,
@@ -618,8 +514,7 @@ provider_base AS (
     WHERE pdf.approval_date >= '2025-01-01'
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
-)
-,
+),
 
 l7d AS (
     SELECT
@@ -637,12 +532,13 @@ l7d AS (
       AND pdf.provider_name NOT ILIKE '%test%'
       AND pdf.reporting_supercategory_new = 'Insta Help'
     GROUP BY pdf.provider_id
-)
-,
+),
 
 ranked AS (
     SELECT
         provider_id,
+        reason,
+        temporary_block,
         temp_block_since_date,
         DATE_TRUNC('week', DATE(temp_block_since_date)) AS ldd_week,
         CASE
@@ -650,87 +546,124 @@ ranked AS (
                  AND temporary_block = 'true'
             THEN 'churn'
             ELSE 'active'
-        END AS status_pro
-    FROM (
-        SELECT
-            provider_id,
-            temporary_block,
-            temp_block_since_date,
-            date,
-            ROW_NUMBER() OVER (
-                PARTITION BY provider_id
-                ORDER BY date DESC
-            ) AS rn
-        FROM PROVIDERXDATE__ACTIVE_PROFILE__HOURLY__FACTS
-        WHERE customer_category_key = 'insta_maids'
-    )
+        END AS status_pro,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider_id
+            ORDER BY date DESC
+        ) AS rn
+    FROM PROVIDERXDATE__ACTIVE_PROFILE__HOURLY__FACTS
+    WHERE customer_category_key = 'insta_maids'
+),
+
+ranked_latest AS (
+    SELECT *
+    FROM ranked
     WHERE rn = 1
-)
-,
+),
 
 churn_bucket AS (
     SELECT
-        pb.provider_id,
-        pb.app_date,
-        COALESCE(r.ldd_week, DATE_TRUNC('week', CURRENT_DATE)) AS churn_week,
+        *,
         CASE
-            WHEN COALESCE(l.L7D_status, 'Unknown') = 'Not Working'
-                  OR r.status_pro = 'churn'
-            THEN '3. Churn'
-            WHEN COALESCE(l.L7D_status, 'Unknown') = 'Working'
-                  OR r.status_pro = 'active'
-            THEN '1. Active'
-            WHEN pb.ldd IS NULL
-                 AND DATE(pb.app_date) >= CURRENT_DATE - 7
-            THEN '1. Active'
-        END AS churn_status
-    FROM provider_base pb
-    LEFT JOIN l7d l ON pb.provider_id = l.provider_id
-    LEFT JOIN ranked r ON pb.provider_id = r.provider_id
-)
-,
+            WHEN churn_status = '1. Active' THEN '1. Active'
+            WHEN age = 0   AND churn_status = '3. Churn' THEN '3. D0 churn'
+            WHEN age <= 7  AND churn_status = '3. Churn' THEN '4. D7 churn'
+            WHEN age <= 17 AND churn_status = '3. Churn' THEN '5. D15 churn'
+            WHEN age <= 30 AND churn_status = '3. Churn' THEN '6. D30 churn'
+            WHEN age <= 60 AND churn_status = '3. Churn' THEN '7. D60 churn'
+            WHEN age <= 90 AND churn_status = '3. Churn' THEN '8. D90 churn'
+            WHEN age <= 120 AND churn_status = '3. Churn' THEN '9. D120 churn'
+            ELSE '10. >D120 churn'
+        END AS churn_bucket_label
+    FROM (
+        SELECT
+            pb.provider_id,
+            pb.app_date,
+            DATEDIFF('day', pb.app_date, CURRENT_DATE) AS age,
+            COALESCE(rl.ldd_week, DATE_TRUNC('week', CURRENT_DATE)) AS churn_week,
+            CASE
+                WHEN COALESCE(l7d.L7D_status, 'Unknown') = 'Not Working'
+                      OR rl.status_pro = 'churn'
+                THEN '3. Churn'
+                WHEN COALESCE(l7d.L7D_status, 'Unknown') = 'Working'
+                      OR rl.status_pro = 'active'
+                THEN '1. Active'
+                WHEN pb.ldd IS NULL
+                     AND DATE(pb.app_date) >= CURRENT_DATE - 7
+                THEN '1. Active'
+            END AS churn_status
+        FROM provider_base pb
+        LEFT JOIN l7d
+            ON pb.provider_id = l7d.provider_id
+        LEFT JOIN ranked_latest rl
+            ON pb.provider_id = rl.provider_id
+    )
+),
 
-churn_by_trainer AS (
+poc_trainer AS (
     SELECT
-        s.raw_trainer AS trainer_name,
-        cb.churn_week  AS ldd_week,
-        COUNT(DISTINCT cb.provider_id) AS churn_partner_count
-    FROM churn_bucket cb
-    INNER JOIN src_trainer s
-        ON cb.provider_id = s.provider_id
-    WHERE cb.churn_status = '3. Churn'
-      AND s.raw_trainer IS NOT NULL
-    GROUP BY s.raw_trainer, cb.churn_week
+        provider_id,
+        created_by AS trainer_name,
+        DATE_TRUNC('week', created_at_ist) AS sdate
+    FROM (
+        SELECT
+            provider_id,
+            created_by,
+            created_at_ist,
+            ROW_NUMBER() OVER (
+                PARTITION BY provider_id
+                ORDER BY created_at_ist DESC
+            ) AS rn
+        FROM public.provider_module_provider_response__view
+        WHERE module_type = 'screening'
+    )
+    WHERE rn = 1
+      AND created_by IS NOT NULL
 )
 
 SELECT
-    a.trainer,
-    DATE(a.week)                          AS "week::multi-filter",
-    a.hh_eligible,
-    t.age_tm                              AS "TM_AGE::multi-filter",
-    a.avg_rating,
-    a.sp_pct,
-    a.sp_tp_pct,
-    a.tp_pct,
-    a.elc_pip_pct,
-    CASE
-        WHEN a.elc_pip_pct < 20 THEN 'Less Than 20'
-        ELSE 'Greater than 20'
-    END                                   AS ELC_PIP_pct_bracket,
-    a.hh_pros_avg_rating,
-    a.score,
-    CASE
-        WHEN a.score > 75 THEN 'Greater than 75'
-        ELSE 'Less than 75'
-    END                                   AS score_range,
-    DENSE_RANK() OVER (
-        PARTITION BY a.week
-        ORDER BY a.score DESC
-    )                                     AS FINAL_RANK,
-    COALESCE(c.churn_partner_count, 0)    AS churn_partner_count
-FROM combined a
-LEFT JOIN tm_age t
-    ON a.trainer = t.created_by
-LEFT JOIN churn_by_trainer c
-    ON a.trainer = c.trainer_name
-   AND a.week    = c.ldd_week
+    pt.trainer_name,
+    cb.churn_week AS ldd_week,
+    COUNT(DISTINCT cb.provider_id) AS churn_partner_count,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '3. D0 churn'     THEN cb.provider_id END) AS d0_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '4. D7 churn'     THEN cb.provider_id END) AS d7_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '5. D15 churn'    THEN cb.provider_id END) AS d15_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '6. D30 churn'    THEN cb.provider_id END) AS d30_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '7. D60 churn'    THEN cb.provider_id END) AS d60_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '8. D90 churn'    THEN cb.provider_id END) AS d90_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '9. D120 churn'   THEN cb.provider_id END) AS d120_churn,
+    COUNT(DISTINCT CASE WHEN cb.churn_bucket_label = '10. >D120 churn' THEN cb.provider_id END) AS gt_d120_churn
+FROM churn_bucket cb
+INNER JOIN poc_trainer pt
+    ON cb.provider_id = pt.provider_id
+WHERE cb.churn_status = '3. Churn'
+  AND pt.trainer_name IS NOT NULL
+GROUP BY pt.trainer_name, cb.churn_week
+)
+
+SELECT DISTINCT
+    v.trainer                            AS trainer,
+    COALESCE(v.week, v1.perf_week)       AS week,
+    v1.hh_eligible,
+    v.sp_pct,
+    v.sp_tp_pct,
+    v.tp_pct,
+    v.elc_pip_pct,
+    COALESCE(v3.churn_partner_count, 0)  AS churn_partner_count,
+    COALESCE(v3.d0_churn, 0)             AS d0_churn,
+    COALESCE(v3.d7_churn, 0)             AS d7_churn,
+    COALESCE(v3.d15_churn, 0)            AS d15_churn,
+    COALESCE(v3.d30_churn, 0)            AS d30_churn,
+    COALESCE(v3.d60_churn, 0)            AS d60_churn,
+    COALESCE(v3.d90_churn, 0)            AS d90_churn,
+    COALESCE(v3.d120_churn, 0)           AS d120_churn,
+    COALESCE(v3.gt_d120_churn, 0)        AS gt_d120_churn
+FROM view1 v
+FULL OUTER JOIN view2 v1
+    ON v.trainer = v1.trainer_name
+   AND v.week    = v1.perf_week
+LEFT JOIN view3 v3
+    ON v.trainer = v3.trainer_name
+   AND COALESCE(v.week, v1.perf_week) = v3.ldd_week
+WHERE v.trainer IS NOT NULL
+ORDER BY week DESC, trainer ASC
