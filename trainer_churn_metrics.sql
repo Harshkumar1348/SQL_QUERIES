@@ -576,12 +576,9 @@ select distinct f.*,z.app_date,date(z.ldd) as ldd,churn_status,age,churn_bucket,
 )
 
 select distinct
-    CASE
-        WHEN LOWER(REPLACE(REPLACE(REGEXP_REPLACE(TRAINER_NAME, '@urbancompany\\.com', ''), '.ext', ''), ' ', ''))
-             IN ('sanjibkumarsaha', 'sanjibsaha')
-        THEN 'sanjibsaha'
-        ELSE LOWER(REPLACE(REPLACE(REGEXP_REPLACE(TRAINER_NAME, '@urbancompany\\.com', ''), '.ext', ''), ' ', ''))
-    END AS Trainer,
+    REPLACE(
+        LOWER(REPLACE(REPLACE(REGEXP_REPLACE(TRAINER_NAME, '@urbancompany\\.com', ''), '.ext', ''), ' ', '')),
+        'sanjibkumarsaha', 'sanjibsaha') AS Trainer,
     date_trunc('week',date(in_training)) as "week::multi-filter",
     city as "city::filter",
     COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END) as IT,
