@@ -590,7 +590,7 @@ select distinct
   COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END) as IT,
  COUNT(DISTINCT CASE WHEN training_passed IS NOT NULL THEN provider_id END) as TP,
  COUNT(DISTINCT CASE WHEN training_failed IS NOT NULL THEN provider_id END) as TF,
- COUNT(DISTINCT CASE WHEN in_training IS NOT NULL AND training_passed IS NULL AND training_failed IS NULL THEN provider_id END) as Drop_offs,
+ GREATEST(IT - TP - TF, 0) as Drop_offs,
     ROUND(COUNT(DISTINCT CASE WHEN training_passed IS NOT NULL THEN provider_id END)::FLOAT 
         / NULLIF(COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END), 0), 2) * 100 AS tp_pct,
     ROUND(
