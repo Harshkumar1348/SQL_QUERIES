@@ -587,9 +587,10 @@ select distinct
     END AS Trainer,
     date_trunc('week',date(in_training)) as "week::multi-filter",
     city as "city::filter",
-    COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END) as IT,
-    COUNT(DISTINCT CASE WHEN training_passed IS NOT NULL THEN provider_id END) as TP,
-    (IT-TP- COUNT(DISTINCT CASE WHEN training_failed IS NOT NULL THEN provider_id END) ) as Drop_offs,
+  COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END) as IT,
+ COUNT(DISTINCT CASE WHEN training_passed IS NOT NULL THEN provider_id END) as TP,
+ COUNT(DISTINCT CASE WHEN training_failed IS NOT NULL THEN provider_id END) as TF,
+ COUNT(DISTINCT CASE WHEN in_training IS NOT NULL AND training_passed IS NULL AND training_failed IS NULL THEN provider_id END) as Drop_offs,
     ROUND(COUNT(DISTINCT CASE WHEN training_passed IS NOT NULL THEN provider_id END)::FLOAT 
         / NULLIF(COUNT(DISTINCT CASE WHEN in_training IS NOT NULL THEN provider_id END), 0), 2) * 100 AS tp_pct,
     ROUND(
