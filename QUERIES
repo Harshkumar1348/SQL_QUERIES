@@ -1,1 +1,30 @@
 SQL_PRACtICE
+
+-- Monthly Domain Summary (August 2022)
+-- Shows per-user TLD breakdown with pricing for domains expiring in Aug 2022
+
+SELECT
+    r.username,
+    CONCAT('.', r.tld_part, ' ($', r.unit_price, '/year) x ', r.domain_count) AS tld,
+    CONCAT('$', r.total_amount) AS total
+FROM (
+    SELECT
+        a.username,
+        SUBSTRING_INDEX(d.name, '.', -1) AS tld_part,
+        CAST(REPLACE(p.price, '$', '') AS DECIMAL(10,2)) AS unit_price,
+        COUNT(*) AS domain_count,
+        CAST(COUNT(*) * CAST(REPLACE(p.price, '$', '') AS DECIMAL(10,2)) AS DECIMAL(10,2)) AS total_amount
+    FROM accounts a
+    JOIN domains d ON d.account_id = a.id
+    JOIN prices p ON p.tld = SUBSTRING_INDEX(d.name, '.', -1)
+    WHERE d.expiration_date >= '2022-08-01'
+      AND d.expiration_date < '2022-09-01'
+    GROUP BY
+        a.username,
+        tld_part,
+        unit_price
+) r
+ORDER BY
+    r.username ASC,
+    r.total_amount DESC,
+    r.tld_part ASC;
