@@ -1,1 +1,41 @@
 SQL_PRACtICE
+
+-- Monthly domain summary (MySQL)
+SELECT
+    r.username,
+    CONCAT('.', r.tld_part, ' ($', FORMAT(r.unit_price, 2), '/year) x ', r.domain_count) AS tld,
+    CONCAT('$', FORMAT(r.total_amount, 2)) AS total
+FROM (
+    SELECT
+        a.username,
+        SUBSTRING_INDEX(d.name, '.', -1) AS tld_part,
+        CAST(
+            SUBSTRING_INDEX(REPLACE(REPLACE(p.price, '$', ''), ',', ''), '/', 1)
+            AS DECIMAL(10, 2)
+        ) AS unit_price,
+        COUNT(*) AS domain_count,
+        SUM(
+            CAST(
+                SUBSTRING_INDEX(REPLACE(REPLACE(p.price, '$', ''), ',', ''), '/', 1)
+                AS DECIMAL(10, 2)
+            )
+        ) AS total_amount
+    FROM accounts AS a
+    JOIN domains AS d
+      ON d.account_id = a.id
+    JOIN prices AS p
+      ON p.tld = SUBSTRING_INDEX(d.name, '.', -1)
+    WHERE d.expiration_date >= '2022-08-01'
+      AND d.expiration_date <  '2022-09-01'
+    GROUP BY
+        a.username,
+        SUBSTRING_INDEX(d.name, '.', -1),
+        CAST(
+            SUBSTRING_INDEX(REPLACE(REPLACE(p.price, '$', ''), ',', ''), '/', 1)
+            AS DECIMAL(10, 2)
+        )
+) AS r
+ORDER BY
+    r.username ASC,
+    r.total_amount DESC,
+    r.tld_part ASC;
