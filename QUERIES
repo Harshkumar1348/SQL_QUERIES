@@ -1,1 +1,149 @@
-SQL_PRACtICE
+-- =============================================================================
+-- Weekly Hours Aggregation for Providers
+-- =============================================================================
+--
+-- PROBLEM:
+--   The original query returns only a single day's hours (e.g. 11) per week
+--   instead of the weekly total (e.g. 77 = 7 × 11).
+--
+--   Root cause: PROVIDER__DAILY__FACTS may not contain one distinct row per
+--   provider per calendar day. LAST_DELIVERY_DATE can repeat or only appear
+--   on actual delivery days, so DATE_TRUNC('week', LAST_DELIVERY_DATE)
+--   groups them into a single row per week with no real summation.
+-- =============================================================================
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 1  (Diagnostic) — Run this first to understand the data shape
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Check how many rows exist per provider per week and what dates appear.
+-- If "days_in_week" is 1 (or very low), the table does not carry one row
+-- per calendar day and the original SUM will never reach 77.
+
+SELECT
+    provider_id,
+    DATE_TRUNC('week', CAST(LAST_DELIVERY_DATE AS DATE)) AS availability_week,
+    COUNT(*)                                               AS rows_in_week,
+    COUNT(DISTINCT CAST(LAST_DELIVERY_DATE AS DATE))       AS distinct_days_in_week,
+    MIN(CAST(LAST_DELIVERY_DATE AS DATE))                  AS first_day,
+    MAX(CAST(LAST_DELIVERY_DATE AS DATE))                  AS last_day,
+    MIN(COALESCE(provider_availability_day_end_hour, 0)
+      - COALESCE(provider_availability_day_start_hour, 0)) AS min_daily_hours,
+    MAX(COALESCE(provider_availability_day_end_hour, 0)
+      - COALESCE(provider_availability_day_start_hour, 0)) AS max_daily_hours
+FROM PUBLIC.PROVIDER__DAILY__FACTS
+WHERE CAST(LAST_DELIVERY_DATE AS DATE) >= '2026-01-01'
+  AND CAST(LAST_DELIVERY_DATE AS DATE) <= CURRENT_DATE
+GROUP BY 1, 2
+ORDER BY 1, 2
+LIMIT 50;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 2  (Fix A) — Use when the table HAS one row per provider per day
+-- ─────────────────────────────────────────────────────────────────────────────
+-- If the diagnostic shows distinct_days_in_week = 7 but total_hours is still
+-- 11, it means duplicate rows are being collapsed.  Fix: deduplicate first,
+-- then sum across distinct days only.
+
+WITH daily_deduped AS (
+    SELECT DISTINCT
+        provider_id,
+        CAST(LAST_DELIVERY_DATE AS DATE)                        AS delivery_date,
+        COALESCE(provider_availability_day_end_hour, 0)
+        - COALESCE(provider_availability_day_start_hour, 0)     AS daily_hours
+    FROM PUBLIC.PROVIDER__DAILY__FACTS
+    WHERE CAST(LAST_DELIVERY_DATE AS DATE) >= '2026-01-01'
+      AND CAST(LAST_DELIVERY_DATE AS DATE) <= CURRENT_DATE
+)
+SELECT
+    provider_id,
+    DATE_TRUNC('week', delivery_date) AS availability_week,
+    SUM(daily_hours)                  AS total_hours
+FROM daily_deduped
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 3  (Fix B) — Use when the table has FEWER rows than 7 per week
+-- ─────────────────────────────────────────────────────────────────────────────
+-- If the diagnostic shows only 1 (or a few) distinct days per week, the
+-- table does not store every calendar day.  We generate all 7 days of each
+-- week and cross-join the provider's daily schedule to get the full weekly sum.
+
+WITH date_spine AS (
+    SELECT DATEADD('day', seq4(), '2026-01-01'::DATE) AS calendar_date
+    FROM TABLE(GENERATOR(ROWCOUNT => 365))
+    WHERE calendar_date <= CURRENT_DATE
+),
+
+latest_availability AS (
+    SELECT
+        provider_id,
+        COALESCE(provider_availability_day_end_hour, 0)
+        - COALESCE(provider_availability_day_start_hour, 0)   AS daily_hours,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider_id
+            ORDER BY LAST_DELIVERY_DATE DESC
+        ) AS rn
+    FROM PUBLIC.PROVIDER__DAILY__FACTS
+    WHERE CAST(LAST_DELIVERY_DATE AS DATE) >= '2026-01-01'
+      AND CAST(LAST_DELIVERY_DATE AS DATE) <= CURRENT_DATE
+)
+
+SELECT
+    la.provider_id,
+    DATE_TRUNC('week', ds.calendar_date) AS availability_week,
+    SUM(la.daily_hours)                  AS total_hours
+FROM date_spine           ds
+CROSS JOIN latest_availability la
+WHERE la.rn = 1
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 4  (Fix C — RECOMMENDED) — Multiply daily hours × days present
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Simplest practical fix: count how many distinct days each provider appears
+-- in a week and multiply by the daily hours.  Works regardless of row count.
+
+WITH weekly_availability AS (
+    SELECT
+        provider_id,
+        DATE_TRUNC('week', CAST(LAST_DELIVERY_DATE AS DATE))     AS availability_week,
+        COALESCE(provider_availability_day_end_hour, 0)
+        - COALESCE(provider_availability_day_start_hour, 0)       AS daily_hours,
+        CAST(LAST_DELIVERY_DATE AS DATE)                          AS delivery_day
+    FROM PUBLIC.PROVIDER__DAILY__FACTS
+    WHERE CAST(LAST_DELIVERY_DATE AS DATE) >= '2026-01-01'
+      AND CAST(LAST_DELIVERY_DATE AS DATE) <= CURRENT_DATE
+)
+SELECT
+    provider_id,
+    availability_week,
+    COUNT(DISTINCT delivery_day)                                  AS days_worked,
+    AVG(daily_hours)                                              AS avg_daily_hours,
+    COUNT(DISTINCT delivery_day) * AVG(daily_hours)               AS total_weekly_hours
+FROM weekly_availability
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 5  (Fix D) — Assume 7-day work-week, multiply directly
+-- ─────────────────────────────────────────────────────────────────────────────
+-- If you always want full-week hours (Mon–Sun) regardless of actual delivery
+-- days, simply multiply the daily hours by 7.
+
+SELECT
+    provider_id,
+    DATE_TRUNC('week', CAST(LAST_DELIVERY_DATE AS DATE)) AS availability_week,
+    (COALESCE(provider_availability_day_end_hour, 0)
+     - COALESCE(provider_availability_day_start_hour, 0)) * 7 AS total_weekly_hours
+FROM PUBLIC.PROVIDER__DAILY__FACTS
+WHERE CAST(LAST_DELIVERY_DATE AS DATE) >= '2026-01-01'
+  AND CAST(LAST_DELIVERY_DATE AS DATE) <= CURRENT_DATE
+GROUP BY 1, 2, 3
+ORDER BY 1, 2;
